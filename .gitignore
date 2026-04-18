@@ -1,0 +1,39 @@
+# --- 操作系统与 IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.log
+
+# --- 后端 (Python/FastAPI/LangGraph) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+.pytest_cache/
+.python-version
+# 数据库文件（如果是本地测试用的 sqlite）
+*.sqlite3
+*.db
+
+# --- 前端 (React/Vite/Tailwind) ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+.stylelintcache
+# 打包产物
+build/
+.next/
+out/
+
+# --- 文档与临时文件 ---
+/temp/
+*.pdf
+# 允许提交 docs 目录下的内容，但忽略自动生成的文档
+# !/docs/
