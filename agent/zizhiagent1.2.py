@@ -70,6 +70,10 @@ class AgentState(TypedDict, total=False):
     original_target_path: str
     should_sync_back: bool
 
+    #突破单文件限制，增加一个字段记录所有修改过的文件列表，方便后续同步回原路径
+    project_root: str
+    modified_files: List[str]
+
 
 # =========================
 # Utilities
@@ -316,6 +320,8 @@ def execute_bash(command: str) -> str:
             cwd=workspace_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",    # 强制使用 utf-8 解析输出
+            errors="replace",    # 遇到无法解析的乱码时，用问号替换而不是直接让程序崩溃
             timeout=20,
         )
         combined = f"STDOUT:\n{safe_trim(result.stdout)}\n\nSTDERR:\n{safe_trim(result.stderr)}"
@@ -560,6 +566,10 @@ def executor_node(state: AgentState) -> AgentState:
             function_args = parse_tool_arguments(raw_arguments)
             log_state(trace, "act", f"{function_name}({function_args})")
 
+            # 如果工具是写文件，就把它的路径记录下来
+            if function_name == "write_file" and "path" in function_args:
+                state.setdefault("modified_files", []).append(function_args["path"])
+
             if "_argument_error" in function_args:
                 result_text = tool_result("error", function_args["_argument_error"])
             else:
@@ -700,6 +710,7 @@ def modify_code_node(state: AgentState) -> AgentState:
         safe_path = resolve_workspace_path(workspace_dir, target_file)
         with open(safe_path, "w", encoding="utf-8") as f:
             f.write(updated_code)
+        state.setdefault("modified_files", []).append(target_file)
         state["code_context"] = safe_trim(updated_code, 6000)
         state["last_tool_result"] = {
             "status": "success",
@@ -809,28 +820,47 @@ def run_manual_fallback(state: AgentState) -> AgentState:
     return finalize_node(state)
 
 
-def prepare_workspace_with_target(task: str, workspace_dir: str) -> Dict[str, Any]:
-    match = re.search(r"([a-zA-Z0-9_./-]+\.(?:py|cpp|c|js|java|txt))\b", task)
-    if not match:
-        return {
-            "original_target_path": "",
-            "should_sync_back": False,
-        }
+# def prepare_workspace_with_target(task: str, workspace_dir: str) -> Dict[str, Any]:
+#     match = re.search(r"([a-zA-Z0-9_./-]+\.(?:py|cpp|c|js|java|txt))\b", task)
+#     if not match:
+#         return {
+#             "original_target_path": "",
+#             "should_sync_back": False,
+#         }
 
-    candidate = match.group(1)
-    original_path = os.path.abspath(candidate)
+#     candidate = match.group(1)
+#     original_path = os.path.abspath(candidate)
 
-    #如果文件已经存在，将其复制到工作区给 Agent 阅读和修改
-    if os.path.exists(candidate):
-        target = resolve_workspace_path(workspace_dir, os.path.basename(candidate))
-        shutil.copy(candidate, target)
+#     #如果文件已经存在，将其复制到工作区给 Agent 阅读和修改
+#     if os.path.exists(candidate):
+#         target = resolve_workspace_path(workspace_dir, os.path.basename(candidate))
+#         shutil.copy(candidate, target)
         
-    # 无论文件之前存不存在，只要有明确的目标文件，统统允许同步
-    return {
-        "original_target_path": original_path,
-        "should_sync_back": True,
-    }
+#     # 无论文件之前存不存在，只要有明确的目标文件，统统允许同步
+#     return {
+#         "original_target_path": original_path,
+#         "should_sync_back": True,
+#     }
 
+def prepare_workspace(workspace_dir: str) -> Dict[str, Any]:
+    # 以当前执行命令所在的目录作为项目的根目录
+    project_root = os.path.abspath(os.getcwd())
+    
+    # 将整个项目目录拷贝进沙箱
+    # 为了防止把 .git 库或虚拟环境之类巨大的文件夹拷进去拖慢速度，加入ignore
+    try:
+        shutil.copytree(
+            project_root, 
+            workspace_dir, 
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns('.git', '__pycache__', 'venv', 'node_modules', '.idea', '.vscode')
+        )
+    except Exception as e:
+        print(f"Warning: 复制工作区时发生错误: {e}")
+        
+    return {
+        "project_root": project_root
+    }
 
 def sync_workspace_file_back(state: AgentState) -> None:
     trace = state["trace"]
@@ -839,43 +869,48 @@ def sync_workspace_file_back(state: AgentState) -> None:
         log_state(trace, "sync_back_skip", "Skip sync-back because final status is not step_ok")
         return
 
-    if not state.get("should_sync_back"):
-        log_state(trace, "sync_back_skip", "Skip sync-back because no original file path is available")
+    # 获取去重后的修改文件列表
+    modified_files = set(state.get("modified_files", []))
+    if not modified_files:
+        log_state(trace, "sync_back_skip", "Skip sync-back because no files were modified")
         return
 
-    target_file = state.get("target_file", "")
     workspace_dir = state["workspace_dir"]
-    original_target_path = state.get("original_target_path", "")
+    project_root = state.get("project_root", "")
 
-    if not target_file or not original_target_path:
-        log_state(trace, "sync_back_skip", "Skip sync-back because target_file/original_target_path is empty")
+    if not project_root:
+        log_state(trace, "sync_back_skip", "Skip sync-back because project_root is empty")
         return
 
-    try:
-        workspace_file = resolve_workspace_path(workspace_dir, target_file)
+    for file_path in modified_files:
+        try:
+            workspace_file = resolve_workspace_path(workspace_dir, file_path)
 
-        if not os.path.exists(workspace_file):
-            log_state(trace, "sync_back_skip", f"Workspace file does not exist: {workspace_file}")
-            return
+            if not os.path.exists(workspace_file):
+                log_state(trace, "sync_back_skip", f"Workspace file does not exist: {workspace_file}")
+                continue
 
-        os.makedirs(os.path.dirname(original_target_path), exist_ok=True)
-        shutil.copy2(workspace_file, original_target_path)
+            # 计算在工作区中的相对路径，并拼接到原项目根目录下
+            rel_path = os.path.relpath(workspace_file, workspace_dir)
+            dest_file = os.path.join(project_root, rel_path)
 
-        log_state(
-            trace,
-            "sync_back_success",
-            f"Synced workspace file back to original path: {original_target_path}",
-        )
-    except Exception as e:
-        log_state(trace, "sync_back_error", f"Failed to sync workspace file back: {e}")
+            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+            shutil.copy2(workspace_file, dest_file)
 
+            log_state(
+                trace,
+                "sync_back_success",
+                f"Synced back: {rel_path} -> {dest_file}",
+            )
+        except Exception as e:
+            log_state(trace, "sync_back_error", f"Failed to sync {file_path} back: {e}")
 
 # =========================
 # Public API
 # =========================
 def run_agent_plus(task: str) -> str:
     workspace_dir = ensure_workspace()
-    sync_info = prepare_workspace_with_target(task, workspace_dir)
+    sync_info = prepare_workspace(workspace_dir)
 
     initial_state: AgentState = {
         "task": task,
@@ -897,6 +932,9 @@ def run_agent_plus(task: str) -> str:
         "last_execution": {},
         "original_target_path": sync_info.get("original_target_path", ""),
         "should_sync_back": sync_info.get("should_sync_back", False),
+        #
+        "project_root": sync_info.get("project_root", ""),
+        "modified_files": [],
     }
 
     log_state(initial_state["trace"], "start", f"Task: {task}")
