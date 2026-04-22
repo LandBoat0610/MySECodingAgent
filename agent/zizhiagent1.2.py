@@ -437,7 +437,7 @@ def create_plan(task: str, memory: str, trace: List[Dict[str, Any]]) -> List[str
 
 
 def infer_coding_targets(task: str, workspace_dir: str, trace: List[Dict[str, Any]]) -> Dict[str, str]:
-    filename_match = re.search(r"([\w./-]+\.py)\b", task)
+    filename_match = re.search(r"([a-zA-Z0-9_./-]+\.(?:py|cpp|c|js|java|txt))\b", task)
     target_file = filename_match.group(1) if filename_match else "main.py"
     run_command = f"python {target_file}"
 
@@ -445,7 +445,12 @@ def infer_coding_targets(task: str, workspace_dir: str, trace: List[Dict[str, An
         run_command = "pytest -q"
     elif "npm test" in task.lower():
         run_command = "npm test"
-
+    elif target_file.endswith(".cpp"):
+        # C++ 需要先编译后运行
+        run_command = f"g++ {target_file} -o main_exec && ./main_exec"
+    else:
+        run_command = f"python {target_file}"
+    
     try:
         safe_target = resolve_workspace_path(workspace_dir, target_file)
         rel = os.path.relpath(safe_target, workspace_dir)
@@ -770,7 +775,7 @@ def run_manual_fallback(state: AgentState) -> AgentState:
 
 
 def prepare_workspace_with_target(task: str, workspace_dir: str) -> Dict[str, Any]:
-    match = re.search(r"([\w./-]+\.py)\b", task)
+    match = re.search(r"([a-zA-Z0-9_./-]+\.(?:py|cpp|c|js|java|txt))\b", task)
     if not match:
         return {
             "original_target_path": "",
@@ -780,17 +785,15 @@ def prepare_workspace_with_target(task: str, workspace_dir: str) -> Dict[str, An
     candidate = match.group(1)
     original_path = os.path.abspath(candidate)
 
+    #如果文件已经存在，将其复制到工作区给 Agent 阅读和修改
     if os.path.exists(candidate):
         target = resolve_workspace_path(workspace_dir, os.path.basename(candidate))
         shutil.copy(candidate, target)
-        return {
-            "original_target_path": original_path,
-            "should_sync_back": True,
-        }
-
+        
+    # 无论文件之前存不存在，只要有明确的目标文件，统统允许同步
     return {
         "original_target_path": original_path,
-        "should_sync_back": False,
+        "should_sync_back": True,
     }
 
 
