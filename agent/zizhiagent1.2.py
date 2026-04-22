@@ -3,6 +3,7 @@ import re
 import json
 import sys
 import html
+import yaml
 import shutil
 import traceback
 import subprocess
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, Literal
 
 from openai import OpenAI
+
 
 try:
     from langgraph.graph import StateGraph, END
@@ -34,6 +36,8 @@ MAX_TOOL_OUTPUT = 4000
 MAX_STEP_ITERATIONS = 6
 MAX_REFLECTIONS = 3
 DEFAULT_WORKSPACE_PREFIX = "zizhiagent_workspace_"
+
+_PROMPTS_CACHE = None  # 一个全局变量缓存配置，避免每次调用节点都去读硬盘
 
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
@@ -70,6 +74,27 @@ class AgentState(TypedDict, total=False):
 # =========================
 # Utilities
 # =========================
+
+def load_prompts(config_path="prompts.yaml"):
+    """读取并缓存 YAML 配置文件"""
+    global _PROMPTS_CACHE
+    if _PROMPTS_CACHE is not None:
+        return _PROMPTS_CACHE
+    
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    actual_path = os.path.join(base_dir, config_path)
+
+    if not os.path.exists(actual_path):
+        raise FileNotFoundError(f"找不到配置文件: {actual_path}，请检查路径！")
+        
+    with open(actual_path, "r", encoding="utf-8") as f:
+        # 使用 safe_load 保证安全性
+        _PROMPTS_CACHE = yaml.safe_load(f)
+        
+    return _PROMPTS_CACHE
+
+
+
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -401,18 +426,25 @@ def llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
 
 
 def build_system_prompt(memory: str, workspace_dir: str) -> str:
-    return f"""
-You are Agent-Plus, an autonomous coding and research agent.
-You must operate in Planner -> Executor -> Reviewer -> ModifyCode style.
+    try:
+        prompts_config = load_prompts()
+        sys_config = prompts_config.get("system", {})
+    except Exception as e:
+        print(f"Warning: 加载 prompts.yaml 失败，使用后备提示词。({e})")
+        sys_config = {}
 
-Hard rules:
-1. Stay inside the workspace: {workspace_dir}
-2. When you need code context, read the file first.
-3. When execution fails, inspect stderr/returncode before retrying.
-4. Prefer precise tool calls.
-5. Never pretend a fix worked without validation.
-6. Final answers must summarize what changed, what was validated, and remaining risks.
+    role = sys_config.get("role", "You are Agent-Plus, an autonomous coding and research agent.")
+    principles = sys_config.get("principles", "Please write robust code.")
+    constraints = sys_config.get("constraints", "Stay inside the workspace.")
 
+    return f"""{role}
+
+principles:
+{principles}
+Constraints:
+{constraints}
+Workspace: 
+{workspace_dir}
 Memory:
 {memory}
 """.strip()
@@ -551,8 +583,11 @@ def executor_node(state: AgentState) -> AgentState:
                 state["last_execution"] = parsed_result
 
             if parsed_result.get("status") == "error":
-                state.setdefault("errors", []).append(parsed_result)
-                state["last_tool_result"]["action_log"] = action_log
+                # 使用浅拷贝打断循环引用，防止 json.dumps 崩溃
+                error_result = dict(parsed_result) 
+                error_result["action_log"] = action_log
+                state.setdefault("errors", []).append(error_result)
+                state["last_tool_result"] = error_result
                 return state
 
     state["last_tool_result"] = {
