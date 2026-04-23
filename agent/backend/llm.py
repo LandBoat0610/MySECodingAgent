@@ -4,8 +4,8 @@ import re
 from typing import Any, Dict, List
 
 from openai import OpenAI
-from backend.config import MODEL
-from backend.utils import parse_json_object, load_prompts, log_state, resolve_workspace_path, safe_trim
+from agent.backend.config import MODEL
+from agent.backend.utils import parse_json_object, load_prompts, log_state, resolve_workspace_path, safe_trim
 
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),

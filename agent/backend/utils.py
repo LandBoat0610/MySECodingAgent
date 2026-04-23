@@ -7,11 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
-from backend.config import (
+from agent.backend.config import (
     DEFAULT_WORKSPACE_PREFIX, MEMORY_FILE, 
     TRACE_JSON, TRACE_MERMAID, MAX_TOOL_OUTPUT
 )
-from backend.state import AgentState
+from agent.backend.state import AgentState
 
 _PROMPTS_CACHE = None 
 

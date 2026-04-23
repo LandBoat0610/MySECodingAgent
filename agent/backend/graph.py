@@ -11,12 +11,12 @@ except Exception:
     StateGraph = None
     END = "__end__"
 
-from backend.state import AgentState
-from backend.config import MODEL, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
-from backend.utils import log_state, parse_json_object, safe_trim, save_memory, resolve_workspace_path, tool_result
-from backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context, llm_json
-from backend.tools import tools, available_functions, parse_tool_arguments
-import backend.tools as tools_module
+from agent.backend.state import AgentState
+from agent.backend.config import MODEL, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
+from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, resolve_workspace_path, tool_result
+from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context, llm_json
+from agent.backend.tools import tools, available_functions, parse_tool_arguments
+import agent.backend.tools as tools_module
 
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]

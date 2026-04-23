@@ -9,8 +9,8 @@ import urllib.request
 import traceback
 from typing import Dict, Any
 
-from backend.config import BLOCKED_BASH_PATTERNS
-from backend.utils import ensure_workspace, resolve_workspace_path, tool_result, safe_trim
+from agent.backend.config import BLOCKED_BASH_PATTERNS
+from agent.backend.utils import ensure_workspace, resolve_workspace_path, tool_result, safe_trim
 
 CURRENT_WORKSPACE_DIR = None
 
