@@ -27,3 +27,17 @@ planner_prompt:
     {user_task}
     
     请基于上述模板，生成针对当前需求的 3-6 个具体执行步骤。
+    
+infer_targets_prompt:
+  system: "你是一个专业的编码环境配置专家。请务必返回 JSON 格式的对象，并且必须包含 'target_file' 和 'run_command' 两个字段。"
+  template: |
+    请分析用户的开发任务，并确定以下两个信息：
+    1. 'target_file': 需要编辑或执行的主要文件（例如 'main.cpp', 'app.py', 'index.js'）。如果提到了多个文件，请挑选出主入口文件。
+    2. 'run_command': 在终端中运行或编译该代码的确切命令。
+       - 对于 C/C++，请包含编译步骤，并在 Windows 环境下直接运行生成的 exe（例如 'g++ 1.cpp -o main_exec && main_exec.exe'，注意严禁使用 Linux 的 ./ 前缀）。
+       - 对于 Python，直接是 'python 文件名.py'；如果是测试任务则是 'pytest -q'。
+    
+    用户的任务是：
+    {user_task}
+    
+    请只返回包含 'target_file' 和 'run_command' 的 JSON 对象。
