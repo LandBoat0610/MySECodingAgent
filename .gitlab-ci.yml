@@ -6,15 +6,15 @@ stages:
 # 1. 代码风格检查
 flake8_lint:
   stage: lint
-  image: python:3.10-slim
+  image: python:3.11.9
   script:
     - pip install flake8
-    - flake8 zizhi_agent/ tests/ --max-line-length=120
+    - flake8 agent/ tests/ --max-line-length=120
 
 # 2. 单元测试
 pytest_run:
   stage: test
-  image: python:3.10-slim
+  image: python:3.11.9
   script:
     - pip install pytest pyyaml langchain-core
     # 如果有 requirements.txt，使用 pip install -r requirements.txt

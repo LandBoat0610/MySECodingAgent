@@ -5,13 +5,13 @@ from openai import OpenAI
 
 load_dotenv() #读.env 文件并注入环境变量
 
-from backend.utils import (
+from agent.backend.utils import (
     ensure_workspace, prepare_workspace, load_memory, 
     log_state, sync_workspace_file_back, save_trace
 )
-from backend.state import AgentState
-from backend.graph import build_graph, run_manual_fallback
-from backend.config import TRACE_JSON, TRACE_MERMAID
+from agent.backend.state import AgentState
+from agent.backend.graph import build_graph, run_manual_fallback
+from agent.backend.config import TRACE_JSON, TRACE_MERMAID
 
 
 

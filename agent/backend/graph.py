@@ -37,7 +37,7 @@ def executor_node(state: AgentState) -> AgentState:
     step_task = state.get("current_task", state["task"])
     system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
     global CURRENT_WORKSPACE_DIR
-    CURRENT_WORKSPACE_DIR = state["workspace_dir"]
+    tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": f"Current step: {step_task}"})
