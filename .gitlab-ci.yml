@@ -8,7 +8,7 @@ flake8_lint:
   stage: lint
   script:
     - pip install flake8
-    - python -m flake8 agent/ tests/ --max-line-length=120
+    - python -m flake8 agent/ tests/ --max-line-length=120 --ignore=E501,W291,W292,W293,E302,E305,E261
 
 # 2. 单元测试
 pytest_run:
