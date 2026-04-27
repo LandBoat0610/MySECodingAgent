@@ -1,4 +1,4 @@
-#这里组装各个拆分出来的模块生成核心的生命周期图
+# 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
 import traceback
 from typing import Any, Dict, List
@@ -36,7 +36,6 @@ def executor_node(state: AgentState) -> AgentState:
     messages = state["messages"]
     step_task = state.get("current_task", state["task"])
     system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
-    global CURRENT_WORKSPACE_DIR
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})

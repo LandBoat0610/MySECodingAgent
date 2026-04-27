@@ -1,6 +1,5 @@
-#对接 OpenAI 的相关接口，包含代码文件的推演逻辑
+# 对接 OpenAI 的相关接口，包含代码文件的推演逻辑
 import os
-import re
 from typing import Any, Dict, List
 
 from openai import OpenAI

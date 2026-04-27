@@ -1,4 +1,4 @@
-#存储和外界交互的业务核心工具、安全防护及 JSON Schema 的映射层
+# 存储和外界交互的业务核心工具、安全防护及 JSON Schema 的映射层
 import os
 import re
 import json
@@ -6,7 +6,6 @@ import html
 import subprocess
 import urllib.parse
 import urllib.request
-import traceback
 from typing import Dict, Any
 
 from agent.backend.config import BLOCKED_BASH_PATTERNS
