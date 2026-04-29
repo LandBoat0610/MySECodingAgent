@@ -17,7 +17,7 @@ pytest_run:
   script:
     - pip install pytest pyyaml langchain-core pytest-cov
     # 如果有 requirements.txt，使用 pip install -r requirements.txt
-    - python -m pytest tests/ -v
+    - python -m pytest tests/ --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
     reports:
