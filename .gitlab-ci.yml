@@ -15,6 +15,12 @@ flake8_lint:
 pytest_run:
   stage: test
   script:
-    - pip install pytest pyyaml langchain-core
+    - pip install pytest pyyaml langchain-core pytest-cov
     # 如果有 requirements.txt，使用 pip install -r requirements.txt
     - python -m pytest tests/ -v
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
