@@ -121,8 +121,11 @@ def execute_bash(command: str) -> str:
 
 def read_file(path: str) -> str:
     try:
-        workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
-        safe_path = resolve_workspace_path(workspace_dir, path)
+        if os.path.isabs(path):
+            safe_path = path
+        else:
+            workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
+            safe_path = resolve_workspace_path(workspace_dir, path)
         with open(safe_path, "r", encoding="utf-8") as f: content = f.read()
         return tool_result("success", content, path=safe_path)
     except Exception as e:
@@ -130,8 +133,11 @@ def read_file(path: str) -> str:
 
 def write_file(path: str, content: str) -> str:
     try:
-        workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
-        safe_path = resolve_workspace_path(workspace_dir, path)
+        if os.path.isabs(path):
+            safe_path = path
+        else:
+            workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
+            safe_path = resolve_workspace_path(workspace_dir, path)
         os.makedirs(os.path.dirname(safe_path), exist_ok=True)
         with open(safe_path, "w", encoding="utf-8") as f: f.write(content)
         return tool_result("success", f"Successfully wrote to {safe_path}", path=safe_path)

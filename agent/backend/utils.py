@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import yaml
 import shutil
@@ -46,11 +47,39 @@ def safe_trim(text: Optional[str], max_len: int = MAX_TOOL_OUTPUT) -> str:
 def parse_json_object(text: str) -> Dict[str, Any]:
     if not text:
         return {}
+    text = text.strip()
     try:
         data = json.loads(text)
         return data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        pass
+
+    markdown_match = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        text,
+        re.S
+    )
+    if markdown_match:
+        try:
+            data = json.loads(markdown_match.group(1))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+    
+    json_match = re.search(
+        r"(\{.*\})",
+        text,
+        re.S
+    )
+    if json_match:
+        try:
+            data = json.loads(json_match.group(1))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+
+    return {}
+
 
 def ensure_workspace() -> str:
     base = os.environ.get("ZIZHI_AGENT_WORKSPACE")
