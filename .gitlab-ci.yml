@@ -1,6 +1,6 @@
 # .gitlab-ci.yml
 stages:
-  # - lint
+  - lint
   - test
 
 # 1. 代码风格检查
