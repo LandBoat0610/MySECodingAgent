@@ -29,3 +29,41 @@ class StateResponse(BaseModel):
     project_id: str
     status: str
     snapshot: Dict[str, Any]
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    session_id: str
+    reply: str
+    status: str
+
+class PlanResponse(BaseModel):
+    id: str
+    session_id: str
+    content: str
+    status: str
+    created_at: str
+
+from enum import Enum
+
+class PlanAction(str, Enum):
+    agree = "agree"
+    refine = "refine"
+    skip = "skip"
+    stop = "stop"
+
+class PlanActionRequest(BaseModel):
+    action: PlanAction
+
+class PlanActionResponse(BaseModel):
+    plan_id: str
+    action: str
+    status: str
+
+class FileTreeResponse(BaseModel):
+    path: str
+    type: str  # file or directory
+    children: Optional[List['FileTreeResponse']] = None
+
+FileTreeResponse.model_rebuild()

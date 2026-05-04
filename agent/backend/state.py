@@ -3,6 +3,8 @@ from typing import Any, Dict, List, TypedDict
 
 # State 核心状态定义
 class AgentState(TypedDict, total=False):
+    session_id: str
+    project_id: str
     task: str
     messages: List[Dict[str, Any]]
     task_list: List[str]

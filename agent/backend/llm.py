@@ -26,7 +26,7 @@ def llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
 def build_system_prompt(memory: str, workspace_dir: str) -> str:
     try:
         prompts_config = load_prompts()
-        sys_config = prompts_config.get("system", {})
+        sys_config = prompts_config.get("system_prompt", {})
     except Exception as e:
         print(f"Warning: 加载 prompts.yaml 失败，使用后备提示词。({e})")
         sys_config = {}

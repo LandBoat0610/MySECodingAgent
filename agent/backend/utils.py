@@ -135,7 +135,38 @@ def save_memory(task: str, result: str) -> None:
     except Exception:
         pass
 
-def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optional[dict] = None) -> None:
+def _serialize_state(state: Dict[str, Any]) -> str:
+    clean = {k: v for k, v in state.items() if k != "_cancel_event"}
+    return json.dumps(clean, ensure_ascii=False)
+
+def update_session_state(session_id: str, state: Dict[str, Any], status: Optional[str] = None) -> None:
+    from agent.backend.database import get_connection
+    try:
+        snapshot = _serialize_state(state)
+        with get_connection() as conn:
+            if status:
+                conn.execute(
+                    "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
+                    (snapshot, status, session_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET state_snapshot = ? WHERE id = ?",
+                    (snapshot, session_id),
+                )
+    except Exception as e:
+        print(f"Error updating session state: {e}")
+
+_LOG_CALLBACKS = []
+
+def register_log_callback(callback):
+    _LOG_CALLBACKS.append(callback)
+
+def unregister_log_callback(callback):
+    if callback in _LOG_CALLBACKS:
+        _LOG_CALLBACKS.remove(callback)
+
+def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optional[dict] = None, session_id: Optional[str] = None, state: Optional[Dict[str, Any]] = None) -> None:
     item = {
         "time": now_str(), 
         "phase": phase, 
@@ -143,6 +174,17 @@ def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optio
         "meta": meta or {}}
     trace.append(item)
     print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
+    
+    # 如果提供了 session_id 和 state，则同步到数据库
+    if session_id and state:
+        update_session_state(session_id, state)
+        
+    # 调用所有注册的回调（用于 WebSocket 实时推送）
+    for cb in _LOG_CALLBACKS:
+        try:
+            cb(item)
+        except Exception:
+            pass
 
 def save_trace(trace: List[Dict[str, Any]]) -> None:
     with open(TRACE_JSON, "w", encoding="utf-8") as f:
@@ -204,23 +246,24 @@ def prepare_workspace(workspace_dir: str) -> Dict[str, Any]:
     }
 
 def sync_workspace_file_back(state: AgentState) -> None:
-    trace = state["trace"]
+    trace = state.get("trace", [])
+    session_id = state.get("session_id")
 
-    if state.get("status") != "step_ok":
-        log_state(trace, "sync_back_skip", "Skip sync-back because final status is not step_ok")
+    final_status = state.get("status", "")
+    if final_status in ("idle", "awaiting_approval", "running", "needs_fix", "next_step"):
+        log_state(trace, "sync_back_skip", f"Skip sync-back because status is {final_status}", session_id=session_id, state=state)
         return
 
-    # 获取去重后的修改文件列表
     modified_files = set(state.get("modified_files", []))
     if not modified_files:
-        log_state(trace, "sync_back_skip", "Skip sync-back because no files were modified")
+        log_state(trace, "sync_back_skip", "Skip sync-back because no files were modified", session_id=session_id, state=state)
         return
 
-    workspace_dir = state["workspace_dir"]
+    workspace_dir = state.get("workspace_dir", "")
     project_root = state.get("project_root", "")
 
     if not project_root:
-        log_state(trace, "sync_back_skip", "Skip sync-back because project_root is empty")
+        log_state(trace, "sync_back_skip", "Skip sync-back because project_root is empty", session_id=session_id, state=state)
         return
 
     for file_path in modified_files:
@@ -228,20 +271,15 @@ def sync_workspace_file_back(state: AgentState) -> None:
             workspace_file = resolve_workspace_path(workspace_dir, file_path)
 
             if not os.path.exists(workspace_file):
-                log_state(trace, "sync_back_skip", f"Workspace file does not exist: {workspace_file}")
+                log_state(trace, "sync_back_skip", f"Workspace file does not exist: {workspace_file}", session_id=session_id, state=state)
                 continue
 
-            # 计算在工作区中的相对路径，并拼接到原项目根目录下
             rel_path = os.path.relpath(workspace_file, workspace_dir)
             dest_file = os.path.join(project_root, rel_path)
 
             os.makedirs(os.path.dirname(dest_file), exist_ok=True)
             shutil.copy2(workspace_file, dest_file)
 
-            log_state(
-                trace,
-                "sync_back_success",
-                f"Synced back: {rel_path} -> {dest_file}",
-            )
+            log_state(trace, "sync_back_success", f"Synced back: {rel_path} -> {dest_file}", session_id=session_id, state=state)
         except Exception as e:
-            log_state(trace, "sync_back_error", f"Failed to sync {file_path} back: {e}")
+            log_state(trace, "sync_back_error", f"Failed to sync {file_path} back: {e}", session_id=session_id, state=state)
