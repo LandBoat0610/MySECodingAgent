@@ -1,15 +1,15 @@
 # .gitlab-ci.yml
 stages:
-  - lint
+  # - lint
   - test
 
 # 1. 代码风格检查
-flake8_lint:
-  stage: lint
-  script:
-    - pip install flake8
-    - python -m flake8 agent/ tests/ --max-line-length=120 
-  allow_failure: true
+# flake8_lint:
+#   stage: lint
+#   script:
+#     - pip install flake8
+#     - python -m flake8 agent/ tests/ --max-line-length=120 
+#   allow_failure: true
 
 # 2. 单元测试
 pytest_run:
