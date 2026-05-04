@@ -1,26 +1,93 @@
 # .gitlab-ci.yml
 stages:
-  # - lint
+  - lint
+  - security
   - test
+  - report
 
-# 1. 代码风格检查
-# flake8_lint:
-#   stage: lint
-#   script:
-#     - pip install flake8
-#     - python -m flake8 agent/ tests/ --max-line-length=120 
-#   allow_failure: true
+# ---------- 缓存：加速依赖安装 ----------
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cache/pip
+    - .venv/
 
-# 2. 单元测试
-pytest_run:
-  stage: test
+# ---------- 1. 代码风格检查（独立，允许失败）----------
+flake8_lint:
+  stage: lint
+  image: python:3.11
   script:
+    - pip install flake8
+    - python -m flake8 agent/ tests/ --max-line-length=120
+  allow_failure: true
+  needs: []   # 不等待任何作业，立即执行
+
+# ---------- 2. 安全扫描（独立，立即执行）----------
+bandit_scan:
+  stage: security
+  image: python:3.11
+  script:
+    - pip install bandit
+    - bandit -r agent/ -ll
+  allow_failure: true
+  needs: []
+
+# ---------- 3. 单元测试：并行矩阵（按模块拆分）----------
+.test_template: &test_definition
+  stage: test
+  image: python:3.11
+  before_script:
     - pip install pytest pyyaml langchain-core pytest-cov
-    # 如果有 requirements.txt，使用 pip install -r requirements.txt
-    - python -m pytest tests/ --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  script:
+    - python -m pytest $TEST_PATH --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
   artifacts:
     reports:
       coverage_report:
         coverage_format: cobertura
         path: coverage.xml
+    paths:
+      - coverage.xml
+    expire_in: 1 day
+
+pytest_utils:
+  <<: *test_definition
+  variables:
+    TEST_PATH: "tests/test_utils.py tests/test_config.py tests/test_state.py"
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+pytest_tools:
+  <<: *test_definition
+  variables:
+    TEST_PATH: "tests/test_tools.py"
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+pytest_llm:
+  <<: *test_definition
+  variables:
+    TEST_PATH: "tests/test_llm.py"
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+pytest_graph:
+  <<: *test_definition
+  variables:
+    TEST_PATH: "tests/test_graph.py"
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+# ---------- 4. 合并覆盖率报告（可选）----------
+coverage_merge:
+  stage: report
+  image: python:3.11
+  script:
+    - pip install coverage
+    - coverage combine
+    - coverage report -m
+    - coverage xml -o coverage.xml
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.xml
+  needs: ["pytest_utils", "pytest_tools", "pytest_llm", "pytest_graph"]
+  coverage: '/TOTAL.*\s+(\d+%)/'
