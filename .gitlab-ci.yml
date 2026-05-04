@@ -4,17 +4,11 @@ stages:
   - test
   - report
 
-# 缓存 pip 包，加速后续安装
 cache:
   key: "$CI_COMMIT_REF_SLUG"
   paths:
     - .cache/pip
     - .venv/
-
-# 公共安装步骤（仅用于测试作业）
-.test_before_script: &test_before_script
-  before_script:
-    - pip install pytest pyyaml langchain-core pytest-cov
 
 # 1. 代码风格检查
 flake8_lint:
@@ -26,93 +20,88 @@ flake8_lint:
   allow_failure: true
   needs: []
 
-# 2. 安全扫描（修复 bandit 调用)
+# 2. 安全扫描（使用 python -m 保证跨平台）
 bandit_scan:
   stage: security
   image: python:3.11
   before_script:
     - pip install bandit
   script:
-    - python -m bandit -r agent/ -ll || echo "Bandit scan failed (non-critical)"
+    - python -m bandit -r agent/ -ll || echo "Bandit scan skipped (non-critical)"
   allow_failure: true
   needs: []
 
-# 3. 单元测试（并行）
+# 3. 单元测试（并行，每个作业保存独立的 .coverage 文件）
 pytest_utils:
   stage: test
   image: python:3.11
-  <<: *test_before_script
+  before_script:
+    - pip install pytest pyyaml langchain-core pytest-cov
   script:
-    # 直接列出文件，用空格分隔，pwsh 会正确传递给 pytest
+    - $env:COVERAGE_FILE = ".coverage.utils"
     - python -m pytest tests/test_utils.py tests/test_config.py tests/test_state.py --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-  coverage: '/TOTAL.*\s+(\d+%)/'
   artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
     paths:
+      - .coverage.utils
       - coverage.xml
     expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
 
 pytest_tools:
   stage: test
   image: python:3.11
-  <<: *test_before_script
+  before_script:
+    - pip install pytest pyyaml langchain-core pytest-cov
   script:
+    - $env:COVERAGE_FILE = ".coverage.tools"
     - python -m pytest tests/test_tools.py --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-  coverage: '/TOTAL.*\s+(\d+%)/'
   artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
     paths:
+      - .coverage.tools
       - coverage.xml
     expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
 
 pytest_llm:
   stage: test
   image: python:3.11
-  <<: *test_before_script
+  before_script:
+    - pip install pytest pyyaml langchain-core pytest-cov
   script:
+    - $env:COVERAGE_FILE = ".coverage.llm"
     - python -m pytest tests/test_llm.py --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-  coverage: '/TOTAL.*\s+(\d+%)/'
   artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
     paths:
+      - .coverage.llm
       - coverage.xml
     expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
 
 pytest_graph:
   stage: test
   image: python:3.11
-  <<: *test_before_script
+  before_script:
+    - pip install pytest pyyaml langchain-core pytest-cov
   script:
+    - $env:COVERAGE_FILE = ".coverage.graph"
     - python -m pytest tests/test_graph.py --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-  coverage: '/TOTAL.*\s+(\d+%)/'
   artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
     paths:
+      - .coverage.graph
       - coverage.xml
     expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
 
-# 4. 合并覆盖率报告（需要所有测试作业完成）
+# 4. 合并覆盖率报告
 coverage_merge:
   stage: report
   image: python:3.11
   before_script:
     - pip install coverage
   script:
-    - coverage combine
-    - coverage report -m
-    - coverage xml -o coverage.xml
+    - python -m coverage combine .coverage.utils .coverage.tools .coverage.llm .coverage.graph
+    - python -m coverage report -m
+    - python -m coverage xml -o coverage.xml
   artifacts:
     reports:
       coverage_report:
