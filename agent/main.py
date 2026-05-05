@@ -5,6 +5,7 @@ import json
 import asyncio
 from typing import Dict, List, Any
 from datetime import datetime
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
@@ -22,6 +23,7 @@ from agent.backend.schemas import (
 )
 from agent.backend.utils import ensure_workspace  # 用于创建目录（或直接使用 os.makedirs）
 
+load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0")
 
 # 全局工作区根目录（所有新建项目目录均放在此下）

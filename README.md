@@ -1,642 +1,314 @@
-# 迭代二任务一
+# Agent Platform
 
-# ZizhiAgent
-
-一个面向代码任务的自治执行代理（Autonomous Coding Agent），采用 **Planner → Executor → Reviewer → ModifyCode** 的工作流，能够针对给定任务自动规划步骤、调用工具、执行命令、检查结果，并在失败时尝试自动修复代码。
+一个面向代码任务的**自治执行代理平台（Autonomous Coding Agent Platform）**，采用 **Planner → Executor → Reviewer → ModifyCode** 的工作流，提供完整的 Web 管理界面，能够针对自然语言任务自动规划步骤、调用工具、执行命令、检查结果，并在失败时自动修复代码。
 
 ---
 
 ## 1. 项目简介
 
-`ZizhiAgent` 是一个以 Python 编写的轻量级自治代理框架，核心目标是：
+Agent Platform 是一个全栈项目（Python 后端 + Vue 前端），核心能力包括：
 
-- 接收自然语言任务
-- 自动拆解任务步骤
-- 在受限工作区中执行命令和文件操作
-- 调用大模型进行规划、执行和修复
-- 对执行结果进行审查
-- 在必要时进行有限次数的自我修复
-- 输出最终结果摘要和执行轨迹
-
-该项目适合用于：
-
-- 自动化代码修复
-- 简单开发任务执行
-- 代码验证与运行检查
-- 受控环境下的自治代理实验
-- LangGraph 风格状态机代理实践
+- 📋 **项目管理**：创建/管理多个项目工作区，每个项目拥有独立的工作目录
+- 💬 **会话管理**：每个项目下可创建多个对话会话，会话状态持久化到 SQLite
+- 🤖 **自治代理**：接收自然语言任务，自动拆解步骤、调用大模型执行、验证结果、修复代码
+- 🔧 **工具调用**：内置 5 类工具（bash 执行、文件读写、网页搜索、URL 抓取）
+- 🔒 **安全沙箱**：工作区隔离，路径逃逸防护，危险命令拦截
+- 📊 **实时追踪**：WebSocket 实时推送执行轨迹，前端可视化展示
+- ✅ **计划审批**：执行前可预览计划，支持同意/优化/跳过/停止四种操作
+- 🌐 **Web 界面**：Vue 3 构建的现代暗色主题管理界面
 
 ---
 
-## 2. 核心特性
+## 2. 系统架构
 
-### 2.1 自治任务执行
-输入一个自然语言任务后，代理会自动完成以下流程：
-
-1. 规划任务步骤
-2. 推断目标文件和运行命令
-3. 调用工具读取/写入/执行
-4. 检查执行结果
-5. 出错时尝试修复代码
-6. 生成最终总结
-
-### 2.2 支持的工具能力
-内置了 5 类工具：
-
-- `execute_bash`：在工作区内执行 bash 命令
-- `read_file`：读取工作区内文件
-- `write_file`：写入工作区内文件
-- `web_search`：执行简单网页搜索
-- `fetch_url`：抓取网页并提取纯文本内容
-
-### 2.3 安全工作区机制
-所有执行都尽量限制在工作区（workspace）中进行，防止越权访问文件系统：
-
-- 自动创建独立工作目录
-- 路径解析时阻止逃逸工作区
-- 对部分危险 bash 命令进行拦截
-
-### 2.4 自动修复能力
-当执行失败后，代理会：
-
-- 读取最新错误信息
-- 提取当前代码上下文
-- 调用模型生成“完整修正版代码”
-- 重新写回目标文件
-- 再次执行验证
-
-### 2.5 状态追踪与可视化
-执行过程中会记录完整 trace，并输出：
-
-- `agent_trace.json`：结构化状态轨迹
-- `agent_trace.mmd`：Mermaid 状态图
-
-便于调试和分析代理行为。
-
-### 2.6 LangGraph 支持与降级方案
-如果环境中安装了 `langgraph`，则使用图状态机执行；否则自动回退为手写状态机流程，增强兼容性。
+```
+┌──────────────────────────────────────────────────────────┐
+│                      Frontend (Vue 3)                     │
+│  端口: 3000  (Vite dev server, 代理后端到 8000)           │
+│  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌────────────┐ │
+│  │ProjectPanel│ │FileTreePanel│ │FilePreview│ │ ChatPanel │ │
+│  └──────────┘ └───────────┘ └──────────┘ └────────────┘ │
+└──────────────────────┬───────────────────────────────────┘
+                       │ HTTP REST + WebSocket
+┌──────────────────────┴───────────────────────────────────┐
+│                    Backend (FastAPI)                       │
+│  端口: 8000                                                │
+│  ┌────────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐ │
+│  │  main.py   │ │ graph.py │ │  llm.py  │ │ tools.py  │ │
+│  │ (API路由)  │ │(状态机)  │ │(LLM调用) │ │(工具函数) │ │
+│  └────────────┘ └──────────┘ └──────────┘ └───────────┘ │
+│  ┌────────────┐ ┌──────────┐ ┌──────────┐                │
+│  │database.py │ │ state.py │ │ utils.py │                │
+│  │ (SQLite)   │ │(状态定义)│ │(工具函数)│                │
+│  └────────────┘ └──────────┘ └──────────┘                │
+└──────────────────────┬───────────────────────────────────┘
+                       │ OpenAI API
+┌──────────────────────┴───────────────────────────────────┐
+│                  LLM (GPT-4o-mini 等)                      │
+└──────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 3. 项目结构与主要模块
+## 3. 核心特性
 
-### 3.1 配置常量
-代码中定义了多项全局配置，例如：
+### 3.1 自治任务执行 (Planner → Executor → Reviewer → ModifyCode)
 
-- 默认模型名
-- 记忆文件名
-- trace 输出文件名
-- 工具输出最大长度
-- 最大步骤迭代次数
-- 最大自我修复次数
-- 默认工作区前缀
+1. **Planner（规划）**：LLM 将任务拆解为 3-6 个具体步骤，并生成执行计划等待用户确认
+2. **Executor（执行）**：按步骤调用 LLM function calling 选择工具并执行（最多迭代 6 次/步）
+3. **Reviewer（审查）**：检查执行结果，识别错误信号（traceback、exit code 等）
+4. **ModifyCode（修复）**：根据错误信息生成修正代码并写回文件，最多自动修复 3 次
 
-### 3.2 状态结构 `AgentState`
-代理运行状态采用 `TypedDict` 维护，关键字段包括：
+### 3.2 内置工具能力
 
-- `task`：原始任务
-- `task_list`：规划后的任务步骤
-- `current_task`：当前执行步骤
-- `target_file`：目标代码文件
-- `run_command`：运行命令
-- `errors`：错误历史
-- `trace`：执行轨迹
-- `memory`：历史记忆
-- `workspace_dir`：工作区路径
-- `used_tools`：使用过的工具
-- `result_history`：每步结果历史
-- `status`：当前状态
+| 工具           | 功能     | 说明                                       |
+| -------------- | -------- | ------------------------------------------ |
+| `execute_bash` | 执行命令 | 在隔离工作区中执行 bash 命令，20s 超时保护 |
+| `read_file`    | 读取文件 | 读取工作区内文件内容                       |
+| `write_file`   | 写入文件 | 向工作区写入文件，自动创建父目录           |
+| `web_search`   | 网页搜索 | 通过 DuckDuckGo 搜索获取外部信息           |
+| `fetch_url`    | 抓取网页 | 抓取 URL 并提取纯文本内容                  |
 
-### 3.3 工具层
-工具采用函数描述 + 可调用映射的形式组织，便于交给 LLM 进行 function calling。
+### 3.3 安全机制
 
-### 3.4 LLM 辅助函数
-主要包括：
+- **工作区隔离**：所有文件操作限制在项目专属的工作区目录内
+- **路径逃逸防护**：`resolve_workspace_path` 阻止 `../` 等路径逃逸
+- **危险命令拦截**：正则匹配拦截 `rm -rf /`、`shutdown`、`mkfs` 等危险操作
+- **超时控制**：bash 命令 20 秒超时，LLM 调用有超时限制
 
-- `llm_json()`：要求模型返回 JSON
-- `build_system_prompt()`：构建系统提示词
-- `create_plan()`：把任务拆成 3~6 步
-- `infer_coding_targets()`：推断目标文件和运行命令
-- `extract_code_context()`：抽取代码上下文
+### 3.4 实时追踪
 
-### 3.5 节点式执行流
-主要节点包括：
+- 执行轨迹（trace）通过 WebSocket 实时推送到前端
+- 每次执行后状态自动持久化到 SQLite
+- 输出 `agent_trace.json` 和 `agent_trace.mmd`（Mermaid 状态图）
 
-- `planner_node`
-- `executor_node`
-- `check_result_node`
-- `modify_code_node`
-- `next_step_node`
-- `finalize_node`
+### 3.5 LangGraph 支持与降级
 
-它们共同构成一个完整的代理状态流。
+- 若安装了 `langgraph`，使用图状态机执行
+- 否则自动回退为 `run_manual_fallback` 手写状态机
 
 ---
 
-## 4. 工作流程说明
+## 4. 项目结构
 
-代理执行过程遵循如下逻辑：
-
-### 4.1 Planner（规划）
-代理先根据用户任务生成一个简短的任务分解列表。
-
-例如：
-- 读取目标文件
-- 分析错误
-- 执行验证
-- 修复代码
-- 总结结果
-
-### 4.2 Executor（执行）
-执行阶段由模型根据当前步骤决定是否调用工具：
-
-- 读取文件
-- 写入文件
-- 执行命令
-- 检索网页信息
-
-如果模型认为步骤完成，也可以直接给出文字结果。
-
-### 4.3 Reviewer（检查）
-检查节点会结合：
-
-- 最近工具返回状态
-- `execute_bash` 的返回码
-- stderr 内容
-- 常见异常关键词
-
-判断该步骤是否失败。
-
-### 4.4 ModifyCode（修复）
-若失败且尚未达到最大修复次数，则触发自动修复：
-
-- 将任务、当前步骤、目标文件、运行命令、当前代码、最新错误打包交给模型
-- 模型返回：
-  - `diagnosis`
-  - `updated_code`
-  - `summary`
-- 代码被整体覆盖写回目标文件
-
-### 4.5 Finalize（总结）
-任务完成后输出：
-
-- 任务描述
-- 用过的工具
-- 修复次数
-- 目标文件
-- 运行命令
-- 每个步骤的结果
-- 最终状态
-
-同时将结果写入 memory，并保存 trace。
+```
+2-1/
+├── agent/                          # 后端核心代码
+│   ├── main.py                     # FastAPI 应用入口，所有 API 路由
+│   ├── prompts.yaml                # LLM 提示词配置（系统角色、约束、模板）
+│   ├── conftest.py                 # 测试环境配置
+│   ├── __init__.py
+│   └── backend/
+│       ├── config.py               # 全局常量配置（模型、路径、安全规则等）
+│       ├── database.py             # SQLite 数据库初始化与连接管理
+│       ├── graph.py                # 核心状态机：Planner/Executor/Reviewer/ModifyCode
+│       ├── llm.py                  # LLM 调用封装（OpenAI API）
+│       ├── schemas.py              # Pydantic 数据模型（请求/响应）
+│       ├── session_manager.py      # 会话管理器（预留）
+│       ├── state.py                # AgentState TypedDict 定义
+│       ├── tools.py                # 工具定义与实现（5 类工具）
+│       └── utils.py                # 工具函数（路径解析、提示词加载、日志等）
+├── frontend/                       # Vue 3 前端
+│   ├── index.html                  # 入口 HTML
+│   ├── package.json                # 前端依赖与脚本
+│   ├── vite.config.js              # Vite 配置（含代理到后端）
+│   └── src/
+│       ├── App.vue                 # 根组件（三栏布局）
+│       ├── main.js                 # Vue 应用入口
+│       ├── api/index.js            # 后端 API 封装
+│       ├── stores/agent.js         # Pinia 全局状态管理
+│       ├── utils/persistence.js    # 本地持久化（localStorage）
+│       └── components/
+│           ├── ProjectPanel.vue    # 项目/会话列表管理
+│           ├── FileTreePanel.vue   # 文件树面板
+│           ├── FileTreeNode.vue    # 文件树节点组件
+│           ├── FilePreview.vue     # 文件预览面板
+│           ├── ChatPanel.vue       # 对话面板（消息+执行轨迹）
+│           └── PlanDialog.vue      # 计划确认对话框
+├── tests/                          # 单元测试
+│   ├── test_config.py
+│   ├── test_database.py
+│   ├── test_graph.py
+│   ├── test_llm.py
+│   ├── test_main.py
+│   ├── test_schemas.py
+│   ├── test_state.py
+│   ├── test_tools.py
+│   └── test_utils.py
+├── workspaces/                     # 项目工作区目录（运行时自动创建）
+├── docs/                           # 文档目录
+├── requirements.txt                # Python 依赖
+├── Dockerfile                      # Docker 构建文件
+├── agent_memory.md                 # 代理记忆文件（运行时自动生成）
+└── README.md                       # 本文件
+```
 
 ---
 
-## 5. 环境依赖
+## 5. API 接口概览
 
-### 5.1 Python 版本
-建议使用：
+| 方法 | 路径                                                   | 说明                                     |
+| ---- | ------------------------------------------------------ | ---------------------------------------- |
+| GET  | `/projects`                                            | 获取所有项目列表                         |
+| POST | `/projects`                                            | 创建/打开项目                            |
+| GET  | `/projects/{pid}/sessions`                             | 获取项目下会话列表                       |
+| POST | `/projects/{pid}/sessions`                             | 创建新会话                               |
+| GET  | `/projects/{pid}/sessions/{sid}/state`                 | 获取会话状态快照                         |
+| POST | `/projects/{pid}/sessions/{sid}/chat`                  | 发送任务消息                             |
+| WS   | `/projects/{pid}/sessions/{sid}/chat/stream`           | WebSocket 流式执行追踪                   |
+| GET  | `/projects/{pid}/sessions/{sid}/plan`                  | 获取执行计划                             |
+| POST | `/projects/{pid}/sessions/{sid}/plan/{plan_id}/action` | 对计划执行操作（agree/refine/skip/stop） |
+| GET  | `/projects/{pid}/files`                                | 获取项目文件树                           |
 
-- Python 3.10 及以上
+---
 
-### 5.2 必需依赖
-至少需要安装：
+## 6. 环境变量
+
+| 变量                    | 说明                | 默认值                      |
+| ----------------------- | ------------------- | --------------------------- |
+| `OPENAI_API_KEY`        | OpenAI API 密钥     | **必需**                    |
+| `OPENAI_BASE_URL`       | OpenAI API 基础 URL | `https://api.openai.com/v1` |
+| `OPENAI_MODEL`          | 使用的模型名称      | `gpt-4o-mini`               |
+| `ZIZHI_AGENT_WORKSPACE` | 自定义工作区根目录  | 自动创建临时目录            |
+
+---
+
+## 7. 启动方式
+
+### 7.1 环境要求
+
+- Python 3.10+
+- Node.js 18+
+- npm
+
+### 7.2 后端启动
 
 ```bash
-pip install openai
+# 1. 进入项目目录
+cd 2-1
+
+# 2. 创建并激活虚拟环境
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+# 3. 安装 Python 依赖
+pip install -r requirements.txt
+
+# 4. 设置环境变量
+# Windows (PowerShell):
+$env:OPENAI_API_KEY="your-api-key-here"
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"   # 可选，若使用代理则必填
+# Linux/macOS:
+export OPENAI_API_KEY="your-api-key-here"
+
+# 5. 启动后端服务
+cd agent
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-如果需要启用 LangGraph：
+后端启动后访问 http://127.0.0.1:8000/docs 查看 Swagger API 文档。
+
+### 7.3 前端启动
 
 ```bash
-pip install langgraph
+# 打开新终端，进入前端目录
+cd agent/frontend
+
+# 安装 npm 依赖
+npm install
+
+# 启动前端开发服务器
+npm run dev
 ```
 
----
+前端启动后访问 http://localhost:3000。
 
-## 6. 环境变量配置
+> **说明**：Vite dev server 已配置代理，`/projects` 开头的请求会自动转发到 `http://127.0.0.1:8000`。
 
-运行前需要配置以下环境变量：
-
-### 6.1 必填项
-
-#### `OPENAI_API_KEY`
-OpenAI 或兼容接口的 API Key。
-
-示例：
+### 7.4 使用 Docker 启动（仅后端）
 
 ```bash
-export OPENAI_API_KEY="your_api_key"
+# 构建镜像
+docker build -t agent-platform .
+
+# 运行容器
+docker run -p 8000:8000 \
+  -e OPENAI_API_KEY="your-api-key-here" \
+  -e OPENAI_BASE_URL="https://api.openai.com/v1" \
+  agent-platform
 ```
 
-#### `OPENAI_BASE_URL`
-兼容 OpenAI 接口的自定义服务地址。
+### 7.5 完整使用流程
+
+1. 打开浏览器访问 `http://localhost:3000`
+2. 在左侧面板点击 `+` 创建一个**项目**
+3. 选中项目后，点击 `+` 创建一个**会话**
+4. 在右侧 ChatPanel 输入框中描述你的任务（例如"帮我写一个 Python 快速排序程序"）
+5. 点击 **Send** 发送任务
+6. 在弹出对话框中查看 Agent 生成的执行计划，选择：
+   - ✅ **Agree**：同意计划并开始执行
+   - 🔄 **Refine**：让 Agent 重新生成计划
+   - ⏭ **Skip**：跳过当前计划
+   - ⏹ **Stop**：停止执行
+7. 执行过程中可在右侧面板实时查看日志轨迹和最终结果
+
+---
+
+## 8. 运行测试
 
 ```bash
-export OPENAI_BASE_URL="https://your-api-endpoint/v1"
-```
-
-#### `OPENAI_MODEL`
-指定调用模型，默认值为：
-
-```text
-gpt-4o-mini
-```
-
-示例：
-
-```bash
-export OPENAI_MODEL="gpt-4o-mini"
-```
-
-### 6.2 选填项
-
-#### `ZIZHI_AGENT_WORKSPACE`
-指定固定工作区目录。若不设置，则自动创建临时目录。
-
-```bash
-export ZIZHI_AGENT_WORKSPACE="/tmp/zizhi_workspace"
+cd 2-1
+pytest tests/ -v
 ```
 
 ---
 
-## 7. 安装与运行
+## 9. 配置说明
 
-### 7.1 安装
-将脚本保存后安装依赖：
+### 9.1 修改 LLM 提示词
 
-```bash
-pip install openai
-```
+编辑 `agent/prompts.yaml` 可自定义系统角色、编程原则、约束条件和各阶段提示词模板。
 
-如需图执行能力：
+### 9.2 调整代理行为
 
-```bash
-pip install langgraph
-```
+编辑 `agent/backend/config.py` 可调整：
 
-### 7.2 运行方式
-
-#### 命令行执行
-```bash
-python zizhiagent1.2.py "修复 main.py 中的报错并验证运行通过"
-```
-
+| 配置项                  | 说明                 | 默认值        |
+| ----------------------- | -------------------- | ------------- |
+| `MAX_STEP_ITERATIONS`   | 每个步骤最大迭代次数 | 6             |
+| `MAX_REFLECTIONS`       | 最大自我修复次数     | 3             |
+| `MAX_TOOL_OUTPUT`       | 工具输出最大字符数   | 4000          |
+| `BLOCKED_BASH_PATTERNS` | 危险命令拦截正则列表 | 预置 7 条规则 |
 
 ---
 
-## 8. 使用说明
+## 10. 技术栈
 
-### 8.1 基本用法
-直接通过命令行传入自然语言任务：
-
-```bash
-python zizhiagent1.2.py "修复 app.py 的语法错误"
-```
-
-### 代理会自动：
-- 识别目标文件 `app.py`
-- 默认构建运行命令 `python app.py`
-- 读取代码上下文
-- 调用模型进行规划与执行
-- 运行验证
-- 如果失败则尝试修复
-
-### 8.2 测试类任务
-如果任务中包含 `pytest` 或“测试”等关键词，代理会自动将运行命令设置为：
-
-```bash
-pytest -q
-```
-
-例如：
-
-```bash
-python zizhiagent1.2.py "修复项目中的 bug 并运行 pytest"
-```
-
-### 8.3 NPM 测试任务
-如果任务中包含 `npm test`，运行命令将自动切换为：
-
-```bash
-npm test
-```
+| 层级        | 技术                              |
+| ----------- | --------------------------------- |
+| 后端框架    | FastAPI + Uvicorn                 |
+| LLM 调用    | OpenAI Python SDK                 |
+| 状态机      | LangGraph（可选降级为手写状态机） |
+| 数据库      | SQLite                            |
+| 前端框架    | Vue 3 (Composition API)           |
+| 状态管理    | Pinia                             |
+| HTTP 客户端 | Axios                             |
+| 实时通信    | WebSocket                         |
+| 构建工具    | Vite                              |
+| 容器化      | Docker                            |
+| 数据校验    | Pydantic v2                       |
 
 ---
 
-## 9. 输出文件说明
-
-运行后通常会生成以下文件：
-
-### 9.1 `agent_memory.md`
-用于记录历史任务与执行结果，便于后续任务参考。
-
-### 9.2 `agent_trace.json`
-保存完整结构化执行轨迹。
-
-适合：
-- 调试代理行为
-- 回溯工具调用过程
-- 分析每一步决策
-
-### 9.3 `agent_trace.mmd`
-Mermaid 格式流程图，可用于可视化状态流。
-
-可配合 Mermaid 渲染器查看。
-
----
-
-## 10. 工具能力详细说明
-
-### 10.1 `execute_bash(command)`
-在工作区中执行 shell 命令。
-
-### 特点
-- 限制当前目录为工作区
-- 最长执行时间 20 秒
-- 自动记录 stdout / stderr / returncode
-
-### 危险命令拦截
-内置屏蔽了一些高危命令模式，例如：
-
-- `rm -rf /`
-- `shutdown`
-- `reboot`
-- fork bomb
-- `dd if=`
-- `mkfs`
-- 对根目录执行 `chmod -R 777`
-
-这有助于降低误操作风险。
-
----
-
-### 10.2 `read_file(path)`
-读取工作区内文件内容。
-
-### 特点
-- 自动解析为安全路径
-- 防止路径逃逸 workspace
-- 读取结果会做长度截断保护
-
----
-
-### 10.3 `write_file(path, content)`
-将内容写入工作区内文件。
-
-### 特点
-- 自动创建父目录
-- 只允许写入工作区内路径
-
----
-
-### 10.4 `web_search(query)`
-基于 DuckDuckGo HTML 页面进行简易搜索，提取前若干条结果。
-
-### 返回内容
-通常包含：
-
-- 搜索关键词
-- 标题
-- 链接
-
-### 适用场景
-- 查询报错资料
-- 搜索第三方依赖说明
-- 辅助代码修复
-
----
-
-### 10.5 `fetch_url(url)`
-抓取网页内容并提取纯文本。
-
-### 处理方式
-- 删除 `<script>` 与 `<style>`
-- 去除 HTML 标签
-- 解码 HTML 实体
-- 压缩多余空白
-
-### 适用场景
-- 抓取文档页内容
-- 获取博客/说明页面文本
-- 供模型进一步分析
-
----
-
-## 11. 自动修复机制说明
-
-当代理发现步骤执行失败时，会尝试进入修复流程。
-
-### 修复触发条件
-满足以下之一时会认为失败：
-
-- `execute_bash` 返回码非 0
-- stderr 中包含典型错误关键词
-- 工具返回 `status=error`
-- 输出中出现明显异常信号（如 `Traceback`、`SyntaxError` 等）
-
-### 修复次数限制
-默认最多修复：
-
-```text
-3 次
-```
-
-避免无限循环。
-
-### 修复方式
-模型返回的是 **完整文件内容**，不是 diff，因此目标文件会被整体覆盖。
-
----
-
-## 12. 目标文件与运行命令推断规则
-
-### 12.1 目标文件推断
-程序会从任务文本中匹配形如：
-
-```text
-xxx.py
-```
-
-的文件名作为目标文件。
-
-如果没有匹配到，则默认：
-
-```text
-main.py
-```
-
-### 12.2 运行命令推断
-默认规则如下：
-
-- 普通 Python 文件：`python <target_file>`
-- 包含 `pytest` 或 “测试”：`pytest -q`
-- 包含 `npm test`：`npm test`
-
----
-
-## 13. 工作区与文件同步机制
-
-### 13.1 工作区创建
-程序启动时会创建一个工作区：
-
-- 若设置了 `ZIZHI_AGENT_WORKSPACE`，则使用该目录
-- 否则自动创建临时目录
-
-### 13.2 原文件复制
-如果任务中指定的目标文件在原始路径中存在，会被复制到工作区中执行。
-
-### 13.3 回写原文件
-若最终状态为成功（`step_ok`），并且原文件存在映射关系，则会把工作区内修复后的文件同步回原始位置。
-
-这意味着：
-- 成功修复后，原文件会被更新
-- 如果最终失败，则不会同步回去
-
----
-
-## 14. LangGraph 与手动状态机
-
-### 14.1 LangGraph 模式
-若安装了 `langgraph`，程序会用 `StateGraph` 构建流程图：
-
-- planner
-- executor
-- check_result
-- modify_code
-- next_step
-- finalize
-
-### 14.2 回退模式
-若 `langgraph` 导入失败，则自动退化为手写循环逻辑：
-
-- 先执行 planner
-- 再循环 executor → check_result
-- 按状态决定 modify_code / next_step / finalize
-
-这样即便没有 LangGraph，也能正常运行。
-
----
-
-## 15. 示例
-
-### 15.1 修复单文件错误
-```bash
-python zizhiagent1.2.py "修复 hello.py 中的 NameError，并确保可以运行"
-```
-
-### 15.2 运行测试
-```bash
-python zizhiagent1.2.py "修复项目中的问题并运行 pytest"
-```
-
-### 15.3 调整某个文件逻辑
-```bash
-python zizhiagent1.2.py "优化 app.py 中的路径校验逻辑并验证"
-```
-
----
-
-## 16. 适合的使用场景
-
-该项目比较适合：
-
-- 小型 Python 文件修复
-- 自动验证执行结果
-- 快速实验自治代理模式
-- 教学演示：状态机 + 工具调用 + LLM 修复
-- 构建个人代码代理原型
-
----
-
-## 17. 局限性
-
-虽然这个代理具备一定自治能力，但仍存在一些明显限制：
-
-### 17.1 命令执行能力有限
-- bash 执行超时仅 20 秒
-- 不适合重型编译/长时间任务
-- 只做了有限危险命令拦截，不等于完整沙箱
-
-### 17.2 修复策略偏粗粒度
-- `modify_code` 会整体重写文件
-- 对大文件、多文件联动项目不够稳健
-- 可能覆盖原本结构或注释
-
-### 17.3 文件识别较简单
-- 仅靠任务文本里正则匹配 `*.py`
-- 没有更复杂的项目级文件分析
-
-### 17.4 错误检查规则偏启发式
-- 主要依赖 returncode 和若干错误关键词
-- 对业务逻辑错误、隐性错误识别有限
-
-### 17.5 Web 能力较基础
-- 搜索基于 DuckDuckGo HTML 抓取
-- 无更高级检索和页面理解能力
-- 对动态网页支持较弱
-
----
-
-## 18. 常见问题
-
-### 18.1 为什么提示找不到 API Key？
-请确认已设置：
-
-```bash
-export OPENAI_API_KEY="your_api_key"
-```
-
-### 18.2 为什么没有使用 LangGraph？
-因为当前环境可能没有安装：
-
-```bash
-pip install langgraph
-```
-
-未安装时会自动进入 fallback 模式，这不是报错。
-
-### 18.3 为什么原文件没有被修改？
-通常有几种可能：
-
-- 最终状态不是 `step_ok`
-- 任务中没有正确识别目标文件
-- 原始文件路径不存在
-- 没有触发同步回写条件
-
-### 18.4 为什么命令被阻止？
-因为命令匹配到了高危模式，属于安全保护机制。
-
----
-
-## 19. 开发建议
-
-如果你后续准备继续完善这个项目，建议优先增加以下能力：
-
-- 多文件上下文分析
-- AST 级别修复而不是整文件覆盖
-- 更强的测试执行与回归验证
-- 更严格的沙箱隔离
-- 更丰富的工具集（如 git、pytest 结果解析、依赖管理）
-- 更可靠的网页检索与文档理解
-- 更细粒度的 trace 可视化
-
----
-
-## 20. 许可证与说明
-
-本项目当前更像一个实验性自治代理脚本，适合原型验证、个人研究和内部演示。在生产环境使用前，建议补充：
-
-- 安全隔离
-- 异常处理
-- 权限控制
-- 审计日志
-- 更严格的输入输出约束
-
----
-
-## 21. 一句话总结
-
-`ZizhiAgent` 是一个面向代码任务的轻量级自治代理原型，能够在受控工作区内完成 **任务规划、工具调用、执行验证、失败修复、结果总结** 的完整闭环。
-
-
+## 11. 已知限制与未来计划
+
+- [ ] 文件预览功能 API 尚未实现（当前为占位 UI）
+- [ ] 仅支持 OpenAI 兼容 API，暂未接入其他 LLM 提供商
+- [ ] Web 搜索基于 DuckDuckGo HTML 解析，稳定性有限
+- [ ] 无用户认证/授权机制
+- [ ] 会话管理器（`session_manager.py`）尚未实现
+- [ ] 修复策略为整文件覆盖，对大型项目不够精细
+- [ ] 不支持多文件联动分析与修复
