@@ -5,7 +5,8 @@ import json
 import asyncio
 from typing import Dict, List, Any
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -20,17 +21,17 @@ from agent.backend.schemas import (
     PlanActionResponse,
     FileTreeResponse,
 )
-from agent.backend.utils import ensure_workspace  # 用于创建目录（或直接使用 os.makedirs）
+from agent.backend.utils import ensure_workspace
 
-app = FastAPI(title="Agent Platform", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
 
-# 全局工作区根目录（所有新建项目目录均放在此下）
+app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
+
 WORKSPACES_ROOT = os.path.abspath("workspaces")
 os.makedirs(WORKSPACES_ROOT, exist_ok=True)
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 # ------------------ 1. 获取项目列表 ------------------
 @app.get("/projects", response_model=list[ProjectResponse])
@@ -46,12 +47,10 @@ def create_or_open_project(req: ProjectCreateRequest):
     project_id = uuid.uuid4().hex[:8]
 
     if req.workspace_path:
-        # 打开已有项目：验证路径存在
         workspace = os.path.abspath(req.workspace_path)
         if not os.path.isdir(workspace):
             raise HTTPException(status_code=400, detail="指定的工作区路径不存在")
     else:
-        # 新建项目：在 workspaces 下创建专属目录
         workspace = os.path.join(WORKSPACES_ROOT, f"project_{project_id}")
         os.makedirs(workspace, exist_ok=True)
 
@@ -73,7 +72,6 @@ def create_or_open_project(req: ProjectCreateRequest):
 @app.get("/projects/{project_id}/sessions", response_model=list[SessionResponse])
 def list_sessions(project_id: str):
     with get_connection() as conn:
-        # 先确认项目存在
         proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not proj:
             raise HTTPException(status_code=404, detail="项目不存在")
@@ -94,13 +92,12 @@ def create_session(project_id: str, req: SessionCreateRequest):
         if not proj:
             raise HTTPException(status_code=404, detail="项目不存在")
 
-        # 初始化 AgentState 快照，包含项目工作区等关键信息
         initial_state = {
             "session_id": session_id,
             "project_id": project_id,
             "task": "",
             "messages": [],
-            "workspace_dir": proj["workspace_path"],   # ← 关键：与项目目录绑定
+            "workspace_dir": proj["workspace_path"],
             "status": "idle",
             "reflections": 0,
             "errors": [],
@@ -118,7 +115,7 @@ def create_session(project_id: str, req: SessionCreateRequest):
             "final_answer": "",
             "original_target_path": "",
             "should_sync_back": False,
-            "project_root": proj["workspace_path"],   # 也可以用于后续同步
+            "project_root": proj["workspace_path"],
             "trace": [],
         }
 
@@ -164,7 +161,6 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         if not row:
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
 
-        # 更新 state_snapshot 中的 task 和 messages
         state = json.loads(row["state_snapshot"])
         state["task"] = req.message
         state["messages"].append({"role": "user", "content": req.message})
@@ -181,17 +177,7 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         status="running",
     )
 
-# 全局会话锁，用于并发控制
-session_locks: Dict[str, asyncio.Lock] = {}
-
-def get_session_lock(sid: str) -> asyncio.Lock:
-    if sid not in session_locks:
-        session_locks[sid] = asyncio.Lock()
-    return session_locks[sid]
-
 # ------------------ 7. WebSocket 流式对话 ------------------
-from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
 import threading
 from agent.backend.graph import build_graph, run_manual_fallback
 from agent.backend.utils import sync_workspace_file_back, register_log_callback, unregister_log_callback
@@ -203,87 +189,195 @@ def get_cancel_event(sid: str) -> threading.Event:
         _cancel_events[sid] = threading.Event()
     return _cancel_events[sid]
 
+def cleanup_cancel_event(sid: str):
+    _cancel_events.pop(sid, None)
+
+
+class AgentRunner:
+    def __init__(self, sid: str):
+        self.sid = sid
+        self.run_id: str = ""
+        self.cancel_event = get_cancel_event(sid)
+        self._ws_ref: Any = None
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self.done = threading.Event()
+        self.started = threading.Event()
+
+    def set_ws(self, ws, loop: asyncio.AbstractEventLoop):
+        with self._lock:
+            self._ws_ref = ws
+            self._ws_loop = loop
+
+    def clear_ws_if_same(self, ws):
+        with self._lock:
+            if self._ws_ref is ws:
+                self._ws_ref = None
+                self._ws_loop = None
+
+    def send_to_ws(self, item: dict):
+        with self._lock:
+            if self._ws_ref is None or self._ws_loop is None:
+                return
+            ws = self._ws_ref
+            loop = self._ws_loop
+        try:
+            if not loop.is_closed():
+                future = asyncio.run_coroutine_threadsafe(
+                    ws.send_json(item), loop
+                )
+                future.add_done_callback(lambda f, w=ws: self._on_send_done(f, w))
+        except Exception:
+            pass
+
+    def _on_send_done(self, future, ws_sent):
+        try:
+            future.result()
+        except Exception:
+            with self._lock:
+                if self._ws_ref is ws_sent:
+                    self._ws_ref = None
+                    self._ws_loop = None
+
+    def start(self, state: dict):
+        if self._thread and self._thread.is_alive():
+            return False
+        self.cancel_event.clear()
+        self.done.clear()
+        self.started.clear()
+        self.run_id = uuid.uuid4().hex[:8]
+        self._thread = threading.Thread(target=self._run, args=(state,), daemon=True)
+        self._thread.start()
+        self.started.wait(timeout=2.0)
+        return True
+
+    def is_alive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self, state: dict):
+        my_run_id = self.run_id
+        self.started.set()
+        try:
+            state["_cancel_event"] = self.cancel_event
+            graph = build_graph()
+            if graph:
+                final_state = graph.invoke(state)
+            else:
+                final_state = run_manual_fallback(state)
+            sync_workspace_file_back(final_state)
+        except Exception as e:
+            print(f"Agent runner error: {e}")
+        finally:
+            self.done.set()
+            if self.run_id != my_run_id:
+                return
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT status FROM sessions WHERE id = ?",
+                    (self.sid,),
+                ).fetchone()
+                if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
+                    conn.execute(
+                        "UPDATE sessions SET status = 'completed' WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+                        (self.sid,),
+                    )
+            cleanup_cancel_event(self.sid)
+
+
+_agent_runners: Dict[str, AgentRunner] = {}
+
+def get_or_create_agent_runner(sid: str) -> AgentRunner:
+    existing = _agent_runners.get(sid)
+    if existing and not existing.is_alive() and existing.done.is_set():
+        del _agent_runners[sid]
+    if sid not in _agent_runners:
+        _agent_runners[sid] = AgentRunner(sid)
+    return _agent_runners[sid]
+
+_shared_log_callbacks_lock = threading.Lock()
+
+
 @app.websocket("/projects/{project_id}/sessions/{sid}/chat/stream")
 async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
     await websocket.accept()
-    
-    lock = get_session_lock(sid)
-    if lock.locked():
-        await websocket.send_json({"error": "该会话已有 Agent 正在运行，请稍后再试。"})
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            await websocket.send_json({"error": "会话不存在于该项目下"})
+            await websocket.close()
+            return
+
+    state = json.loads(row["state_snapshot"])
+    if not state.get("task"):
+        await websocket.send_json({"error": "请先通过 POST /chat 发送任务消息"})
         await websocket.close()
         return
 
-    async with lock:
-        loop = asyncio.get_running_loop()
-        cancel_event = get_cancel_event(sid)
-        cancel_event.clear()
+    runner = get_or_create_agent_runner(sid)
 
-        def on_log(item):
-            if cancel_event.is_set():
-                return
-            try:
-                if not loop.is_closed():
-                    asyncio.run_coroutine_threadsafe(
-                        websocket.send_json({"type": "trace", "data": item}),
-                        loop,
-                    )
-            except Exception:
-                pass
+    if runner.is_alive() and not runner.done.is_set():
+        runner.set_ws(websocket, asyncio.get_running_loop())
+        need_start = False
+    else:
+        if runner.done.is_set():
+            runner = AgentRunner(sid)
+            _agent_runners[sid] = runner
+        runner.set_ws(websocket, asyncio.get_running_loop())
+        need_start = True
 
-        register_log_callback(on_log)
-        
+    def on_log(item):
+        runner.send_to_ws({"type": "trace", "data": item})
+
+    from agent.backend.utils import _LOG_CALLBACKS
+    with _shared_log_callbacks_lock:
+        _LOG_CALLBACKS.append(on_log)
+
+    if need_start:
+        runner.start(state)
+
+    try:
+        if runner.started.is_set():
+            await websocket.send_json({"phase": "start", "message": "Agent 正在执行..."})
+
+        while not runner.done.is_set():
+            await asyncio.sleep(0.5)
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_snapshot FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+        final_state = json.loads(row["state_snapshot"]) if row else {}
+
+        await websocket.send_json({
+            "phase": "done",
+            "message": "任务完成",
+            "final_answer": final_state.get("final_answer", ""),
+            "status": final_state.get("status"),
+        })
+        await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
         try:
-            with get_connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
-                    (sid, project_id),
-                ).fetchone()
-                if not row:
-                    await websocket.send_json({"error": "会话不存在于该项目下"})
-                    await websocket.close()
-                    return
-
-            state = json.loads(row["state_snapshot"])
-            if not state.get("task"):
-                await websocket.send_json({"error": "请先通过 POST /chat 发送任务消息"})
-                await websocket.close()
-                return
-
-            state["_cancel_event"] = cancel_event
-
-            graph = build_graph()
-            
-            await websocket.send_json({"phase": "start", "message": "Agent 开始执行..."})
-            
-            if graph:
-                final_state = await asyncio.to_thread(graph.invoke, state)
-            else:
-                final_state = await asyncio.to_thread(run_manual_fallback, state)
-            
-            sync_workspace_file_back(final_state)
-
-            if cancel_event.is_set():
-                await websocket.send_json({"phase": "cancelled", "message": "Agent 已终止"})
-            else:
-                await websocket.send_json({
-                    "phase": "done", 
-                    "message": "任务完成", 
-                    "final_answer": final_state.get("final_answer", ""),
-                    "status": final_state.get("status")
-                })
-        except WebSocketDisconnect:
-            cancel_event.set()
-        except Exception as e:
-            try:
-                await websocket.send_json({"error": str(e)})
-            except Exception:
-                pass
-        finally:
-            unregister_log_callback(on_log)
-            try:
-                await websocket.close()
-            except Exception:
-                pass
+            await websocket.send_json({"error": str(e)})
+        except Exception:
+            pass
+    finally:
+        from agent.backend.utils import _LOG_CALLBACKS as cb_list
+        with _shared_log_callbacks_lock:
+            if on_log in cb_list:
+                cb_list.remove(on_log)
+        runner.clear_ws_if_same(websocket)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 # ------------------ 8. 获取当前会话的计划树 ------------------
 @app.get("/projects/{project_id}/sessions/{sid}/plan", response_model=list[PlanResponse])
@@ -326,7 +420,6 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
             "INSERT INTO plan_actions (id, plan_id, action_type, created_at) VALUES (?, ?, ?, ?)",
             (uuid.uuid4().hex[:8], pid, req.action, now),
         )
-        # 更新计划状态
         status_map = {
             "agree": "approved",
             "refine": "refining",
@@ -338,16 +431,62 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
             "UPDATE plans SET status = ? WHERE id = ?",
             (new_status, pid),
         )
+        if req.action == "agree":
+            conn.execute(
+                "UPDATE plans SET status = 'approved' WHERE session_id = ? AND status = 'pending'",
+                (sid,),
+            )
+        elif req.action == "skip":
+            conn.execute(
+                "UPDATE plans SET status = 'skipped' WHERE session_id = ? AND status = 'pending'",
+                (sid,),
+            )
+        elif req.action == "stop":
+            conn.execute(
+                "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
+                (sid,),
+            )
         conn.execute(
             "UPDATE sessions SET status = ? WHERE id = ?",
             (new_status, sid),
         )
+
+    if req.action == "stop":
+        get_cancel_event(sid).set()
 
     return PlanActionResponse(
         plan_id=pid,
         action=req.action,
         status=new_status,
     )
+
+# ------------------ 9.5 停止会话运行 ------------------
+@app.post("/projects/{project_id}/sessions/{sid}/stop")
+def stop_session(project_id: str, sid: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        conn.execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?",
+            (sid,),
+        )
+        conn.execute(
+            "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
+            (sid,),
+        )
+
+    get_cancel_event(sid).set()
+
+    runner = _agent_runners.get(sid)
+    if runner:
+        runner.cancel_event.set()
+
+    return {"status": "stopped", "session_id": sid}
 
 # ------------------ 10. 获取项目文件树 ------------------
 @app.get("/projects/{project_id}/files", response_model=list[FileTreeResponse])

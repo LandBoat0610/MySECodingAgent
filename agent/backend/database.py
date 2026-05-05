@@ -1,4 +1,3 @@
-# agent/backend/database.py
 import sqlite3
 import json
 import os
@@ -8,6 +7,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "agent_platform.db
 
 def init_db():
     with get_connection() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
@@ -46,8 +46,9 @@ def init_db():
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         yield conn
         conn.commit()

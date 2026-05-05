@@ -283,18 +283,18 @@ class TestPlan:
     def test_plan_action_success(self, mock_db):
         mock_conn, mock_cursor = mock_db
         mock_cursor.fetchone.side_effect = [
-            {"id": "s1", "project_id": "p1"},  # 会话
-            {"id": "plan1", "session_id": "s1", "status": "pending"}  # 计划
+            {"id": "s1", "project_id": "p1"},
+            {"id": "plan1", "session_id": "s1", "status": "pending"}
         ]
         with patch("agent.main.uuid.uuid4") as mock_uuid, \
-             patch("agent.main.get_connection", return_value=mock_conn):
+             patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.main.get_cancel_event") as mock_cancel:
+            mock_cancel.return_value = MagicMock()
             mock_uuid.return_value.hex = "act001"
             response = client.post("/projects/p1/sessions/s1/plan/plan1/action", json={"action": "agree"})
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "approved"
-            # 验证 INSERT 和 UPDATE 被调用
-            # 可以检查 execute 调用次数等
 
 
 # ==================== 7. File Tree ====================

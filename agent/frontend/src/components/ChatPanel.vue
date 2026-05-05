@@ -121,15 +121,7 @@ async function handleSend() {
 }
 
 async function handleStopAgent() {
-  if (store.pendingPlans.length > 0) {
-    const plan = store.pendingPlans[0]
-    try {
-      await store.doPlanAction(plan.id, 'stop')
-    } catch (e) {
-      // error handled in store
-    }
-  }
-  store.disconnectWebSocket()
+  await store.doStopSession()
 }
 
 function scrollToBottom() {

@@ -69,7 +69,7 @@ def planner_node(state: AgentState) -> AgentState:
             with get_connection() as conn:
                 for step in steps:
                     conn.execute(
-                        "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ? , ?, ?)",
+                        "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                         (uuid.uuid4().hex[:8], session_id, state["project_id"], step, "pending", datetime.now().isoformat())
                     )
         except Exception as e:
@@ -93,19 +93,38 @@ def planner_node(state: AgentState) -> AgentState:
             update_session_state(session_id, state, status="running")
             log_state(trace, "planner", "用户要求再优化，重新生成计划...", session_id=session_id, state=state)
             steps = create_plan(state["task"], state.get("memory", ""), trace)
+            targets = infer_coding_targets(state["task"], state["workspace_dir"], trace)
             state["task_list"] = steps
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
+            state["target_file"] = targets["target_file"]
+            state["run_command"] = targets["run_command"]
             if session_id:
                 try:
                     with get_connection() as conn:
+                        conn.execute(
+                            "UPDATE plans SET status = 'skipped' WHERE session_id = ? AND status = 'pending'",
+                            (session_id,)
+                        )
                         for step in steps:
                             conn.execute(
-                                "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ? , ?, ?)",
+                                "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                                 (uuid.uuid4().hex[:8], session_id, state["project_id"], step, "pending", datetime.now().isoformat())
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")
+            state["status"] = "awaiting_approval"
+            update_session_state(session_id, state, status="awaiting_approval")
+            log_state(trace, "planner", "优化后的计划已生成，等待用户确认...", session_id=session_id, state=state)
+            approval_result_2 = wait_for_plan_approval(session_id)
+            if approval_result_2 == "approved":
+                state["status"] = "running"
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "planner", "用户已确认优化后的计划，开始执行。", session_id=session_id, state=state)
+            else:
+                state["status"] = "stopped"
+                update_session_state(session_id, state, status="stopped")
+                log_state(trace, "planner", f"优化计划终止: {approval_result_2}", session_id=session_id, state=state)
         else:
             state["status"] = "stopped"
             update_session_state(session_id, state, status="stopped")
@@ -143,7 +162,15 @@ def executor_node(state: AgentState) -> AgentState:
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": f"Current step: {step_task}"})
+    step_context = (
+        f"Current step: {step_task}\n\n"
+        f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
+        f"If the step is already done (e.g. the file already exists and works), "
+        f"just respond with a brief summary without calling any tools. "
+        f"Do NOT create extra files or do extra work beyond this step. "
+        f"When this step is complete, stop calling tools and give a short text summary."
+    )
+    messages.append({"role": "user", "content": step_context})
     action_log: List[Dict[str, Any]] = []
 
     for iteration in range(MAX_STEP_ITERATIONS):
@@ -286,6 +313,15 @@ def check_result_node(state: AgentState) -> AgentState:
     state["status"] = "needs_fix" if failed else "step_ok"
     state["last_review"] = review
     log_state(trace, "check_result", json.dumps(review, ensure_ascii=False), session_id=session_id, state=state)
+
+    if not failed and result.get("status") == "success" and not execution:
+        result_text = str(result.get("output", "")).lower()
+        completion_signals = ["task complete", "done", "finished", "already exist", "no changes needed"]
+        if any(sig in result_text for sig in completion_signals):
+            state["status"] = "step_ok"
+            state["_task_fully_done"] = True
+            log_state(trace, "check_result", "Task appears fully complete, skipping remaining steps", session_id=session_id, state=state)
+
     return state
 
 
@@ -372,13 +408,18 @@ def finalize_node(state: AgentState) -> AgentState:
     
     if session_id:
         from agent.backend.utils import update_session_state
-        update_session_state(session_id, state, status="completed")
+        final_status = state.get("status", "completed")
+        if final_status not in ("stopped", "skipped"):
+            final_status = "completed"
+        update_session_state(session_id, state, status=final_status)
         
     return state
 
 # Routing
 def route_after_check(state: AgentState) -> str:
     if state.get("status") == "stopped":
+        return "finalize"
+    if state.get("_task_fully_done"):
         return "finalize"
     if state.get("status") == "needs_fix" and state.get("reflections", 0) < MAX_REFLECTIONS:
         return "modify_code"

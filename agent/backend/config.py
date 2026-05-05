@@ -6,8 +6,8 @@ MEMORY_FILE = "agent_memory.md"
 TRACE_JSON = "agent_trace.json"
 TRACE_MERMAID = "agent_trace.mmd"
 MAX_TOOL_OUTPUT = 4000
-MAX_STEP_ITERATIONS = 6
-MAX_REFLECTIONS = 3
+MAX_STEP_ITERATIONS = 5
+MAX_REFLECTIONS = 2
 DEFAULT_WORKSPACE_PREFIX = "zizhiagent_workspace_"
 
 # 安全拦截正则列表
