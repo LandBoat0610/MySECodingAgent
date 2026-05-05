@@ -211,7 +211,11 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
     
     lock = get_session_lock(sid)
     if lock.locked():
-        await websocket.send_json({"error": "该会话已有 Agent 正在运行，请稍后再试。"})
+        # 会话正在执行中，发送一个特定 phase 让前端知道不要反复重连
+        await websocket.send_json({
+            "phase": "locked",
+            "message": "该会话已有 Agent 正在运行，请等待当前任务完成或手动停止。"
+        })
         await websocket.close()
         return
 

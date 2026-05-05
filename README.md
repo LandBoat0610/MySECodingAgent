@@ -55,7 +55,7 @@ Agent Platform 是一个全栈项目（Python 后端 + Vue 前端），核心能
 ### 3.1 自治任务执行 (Planner → Executor → Reviewer → ModifyCode)
 
 1. **Planner（规划）**：LLM 将任务拆解为 3-6 个具体步骤，并生成执行计划等待用户确认
-2. **Executor（执行）**：按步骤调用 LLM function calling 选择工具并执行（最多迭代 6 次/步）
+2. **Executor（执行）**：按步骤调用 LLM function calling 选择工具并执行（最多迭代 3 次/步）
 3. **Reviewer（审查）**：检查执行结果，识别错误信号（traceback、exit code 等）
 4. **ModifyCode（修复）**：根据错误信息生成修正代码并写回文件，最多自动修复 3 次
 
@@ -278,7 +278,7 @@ pytest tests/ -v
 
 | 配置项                  | 说明                 | 默认值        |
 | ----------------------- | -------------------- | ------------- |
-| `MAX_STEP_ITERATIONS`   | 每个步骤最大迭代次数 | 6             |
+| `MAX_STEP_ITERATIONS`   | 每个步骤最大迭代次数 | 3             |
 | `MAX_REFLECTIONS`       | 最大自我修复次数     | 3             |
 | `MAX_TOOL_OUTPUT`       | 工具输出最大字符数   | 4000          |
 | `BLOCKED_BASH_PATTERNS` | 危险命令拦截正则列表 | 预置 7 条规则 |

@@ -51,8 +51,22 @@ def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
     
-    steps = create_plan(state["task"], state.get("memory", ""), trace)
-    targets = infer_coding_targets(state["task"], state["workspace_dir"], trace)
+    try:
+        steps = create_plan(state["task"], state.get("memory", ""), trace)
+        targets = infer_coding_targets(state["task"], state["workspace_dir"], trace)
+    except Exception as e:
+        log_state(trace, "planner_error", f"规划阶段失败: {e}", session_id=session_id, state=state)
+        state["task_list"] = [state["task"]]
+        state["current_task_index"] = 0
+        state["current_task"] = state["task"]
+        state["target_file"] = "main.py"
+        state["run_command"] = "python main.py"
+        state["code_context"] = ""
+        if session_id:
+            from agent.backend.utils import update_session_state
+            state["status"] = "awaiting_approval"
+            update_session_state(session_id, state, status="awaiting_approval")
+        return state
     
     state["task_list"] = steps
     state["current_task_index"] = 0
@@ -114,6 +128,28 @@ def planner_node(state: AgentState) -> AgentState:
     return state
 
 
+def task_completed_quick(state: AgentState) -> bool:
+    """
+    基于结果内容快速判断任务是否已完成。
+    仅当最后一步执行成功时才考虑提前完成。
+    """
+    last_result = state.get("last_tool_result", {}) or {}
+    # 如果最后一步是失败的，绝不算完成
+    if last_result.get("status") == "error":
+        return False
+    output = str(last_result.get("output", ""))
+    # 1. 明确完成信号
+    if any(keyword in output for keyword in ["任务完成", "Task completed", "All steps done"]):
+        return True
+    # 2. 如果只执行了一步，且输出较长（说明是问答/简单任务）
+    if state.get("current_task_index", 0) == 0 and len(output) > 200:
+        return True
+    # 3. 如果已经执行了最后一步
+    tasks = state.get("task_list", [])
+    if tasks and state.get("current_task_index", -1) == len(tasks) - 1:
+        return True
+    return False
+
 def _check_cancel(state: AgentState) -> bool:
     cancel_event = state.get("_cancel_event")
     if cancel_event and cancel_event.is_set():
@@ -145,20 +181,72 @@ def executor_node(state: AgentState) -> AgentState:
     messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": f"Current step: {step_task}"})
     action_log: List[Dict[str, Any]] = []
+    use_tools = True  # 首次尝试使用 tools，失败后回退为文本模式
 
     for iteration in range(MAX_STEP_ITERATIONS):
         if _check_cancel(state):
             return state
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         try:
-            response = client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+            if use_tools:
+                response = client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+            else:
+                raise Exception("tools disabled, using text fallback")
         except Exception as e:
-            state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
-            state.setdefault("errors", []).append(state["last_tool_result"])
-            if session_id:
-                from agent.backend.utils import update_session_state
-                update_session_state(session_id, state)
-            return state
+            # 某些第三方 API 不支持 tools/function calling，回退为纯文本模式
+            if use_tools:
+                err_msg = str(e)
+                use_tools = False  # 之后都用文本模式
+                log_state(trace, "tools_fallback", f"tools call failed: {err_msg}, switching to text mode for this step", session_id=session_id, state=state)
+            try:
+                # 构建一个不含 tools 但提示模型用特定格式输出的请求
+                fallback_messages = list(messages)
+                fallback_messages.append({
+                    "role": "user",
+                    "content": (
+                        "You must choose ONE tool to call from this list to complete the current step:\n"
+                        "1. execute_bash(command) - run a shell command\n"
+                        "2. read_file(path) - read a file\n"
+                        "3. write_file(path, content) - write a file\n"
+                        "4. web_search(query) - search the web\n"
+                        "5. fetch_url(url) - fetch a web page\n\n"
+                        "Respond in JSON format: {\"tool\": \"tool_name\", \"args\": {...}}\n"
+                        "If no tool is needed, respond with: {\"tool\": \"none\", \"message\": \"your response\"}"
+                    )
+                })
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=fallback_messages,
+                )
+                # Parse the text-based tool call
+                content = response.choices[0].message.content or ""
+                data = parse_json_object(content)
+                tool_name = data.get("tool", "")
+                if tool_name and tool_name != "none" and tool_name in available_functions:
+                    tool_args = data.get("args", {})
+                    # Construct a fake tool_call structure
+                    class FakeToolCall:
+                        pass
+                    fake_tc = FakeToolCall()
+                    fake_tc.id = "fallback_0"
+                    fake_tc.function = FakeToolCall()
+                    fake_tc.function.name = tool_name
+                    fake_tc.function.arguments = json.dumps(tool_args, ensure_ascii=False)
+                    message = response.choices[0].message
+                    message.tool_calls = [fake_tc]
+                    message.content = None
+                else:
+                    # No tool needed, treat as text response
+                    message = response.choices[0].message
+                    message.tool_calls = None
+                    message.content = data.get("message", content)
+            except Exception as fallback_e:
+                state["last_tool_result"] = {"status": "error", "output": f"LLM call failed in text mode: {fallback_e}", "returncode": None}
+                state.setdefault("errors", []).append(state["last_tool_result"])
+                if session_id:
+                    from agent.backend.utils import update_session_state
+                    update_session_state(session_id, state)
+                return state
 
         message = response.choices[0].message
         msg_dict = {"role": message.role, "content": message.content}
@@ -380,6 +468,12 @@ def finalize_node(state: AgentState) -> AgentState:
 def route_after_check(state: AgentState) -> str:
     if state.get("status") == "stopped":
         return "finalize"
+
+        # 新增：任务提前完成判断
+    if task_completed_quick(state):
+        state["status"] = "completed"  # 标记为完成，方便后续记录
+        return "finalize"
+    
     if state.get("status") == "needs_fix" and state.get("reflections", 0) < MAX_REFLECTIONS:
         return "modify_code"
 

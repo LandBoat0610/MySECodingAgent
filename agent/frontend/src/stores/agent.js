@@ -136,7 +136,15 @@ export const useAgentStore = defineStore('agent', () => {
 
       await fetchPlans()
 
-      if (['running', 'awaiting_approval', 'approved'].includes(stateResp.status)) {
+      // 只有当 WebSocket 尚未连接（或连接的是不同会话）时才建立新连接
+      // 避免在等待计划审批等状态下反复重连
+      const alreadyConnected =
+        wsConnection.value &&
+        wsConnection.value.readyState === WebSocket.OPEN
+      if (
+        !alreadyConnected &&
+        ['running', 'awaiting_approval', 'approved'].includes(stateResp.status)
+      ) {
         connectWebSocket()
       }
 
@@ -196,6 +204,14 @@ export const useAgentStore = defineStore('agent', () => {
           return
         }
 
+        // 后端锁被占用（已有 Agent 在运行），不要反复重连
+        if (data.phase === 'locked') {
+          console.log('Session locked:', data.message)
+          agentRunning.value = false
+          disconnectWebSocket()
+          return
+        }
+
         if (data.type === 'trace' && data.data) {
           traceLogs.value.push(data.data)
         }
@@ -227,7 +243,12 @@ export const useAgentStore = defineStore('agent', () => {
       console.log('WebSocket disconnected')
       wsConnection.value = null
       agentRunning.value = false
-      if (sessionStatus.value === 'running' && !wsReconnecting.value) {
+      // 只有在 status 为 running 时才尝试重连（等待审批、已完成等状态不需要重连）
+      // 等待审批状态由 PlanDialog 的 Agree 按钮来重新建立 WebSocket
+      if (
+        sessionStatus.value === 'running' &&
+        !wsReconnecting.value
+      ) {
         wsReconnecting.value = true
         setTimeout(() => {
           wsReconnecting.value = false

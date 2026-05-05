@@ -12,14 +12,26 @@ client = OpenAI(
 )
 
 def llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    response = client.chat.completions.create(
-        model=MODEL,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    """调用 LLM 并解析 JSON 返回。优先使用 response_format，不支持时回退为纯文本解析。"""
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception:
+        # 某些第三方 API（如部分 DeepSeek 代理）不支持 response_format，
+        # 回退为不带 response_format 的调用
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
     return parse_json_object(response.choices[0].message.content or "{}")
 
 
@@ -51,19 +63,35 @@ Memory:
 def create_plan(task: str, memory: str, trace: List[Dict[str, Any]]) -> List[str]:
     log_state(trace, "plan", f"Creating plan for task: {task}")
     try:
-        data = llm_json(
-            "You are a planner for an autonomous agent. Break the task into 3-6 concrete executable steps. Return JSON object with key 'steps'.",
-            f"Task:\n{task}\n\nMemory:\n{memory}",
+        # 1. 尝试加载自定义模板
+        prompts_config = load_prompts()
+        plan_config = prompts_config.get("planner_prompt", {})
+        sys_prompt = plan_config.get("system",
+            "You are a planner. Return JSON with 'complexity' and 'steps'."
         )
-        steps = data.get("steps", [])
-        if not isinstance(steps, list) or not steps:
-            return [task]
-        result = [str(s).strip() for s in steps if str(s).strip()]
-        log_state(trace, "plan_result", "\n".join(f"{i + 1}. {s}" for i, s in enumerate(result)))
-        return result or [task]
+        template = plan_config.get("template", "Task:\n{user_task}")
+        user_prompt = template.format(user_task=task)
     except Exception as e:
-        log_state(trace, "plan_error", str(e))
+        # 后备
+        log_state(trace, "plan_prompt_error", str(e))
+        sys_prompt = "You are a planner. Return JSON with 'complexity' and 'steps'."
+        user_prompt = f"Task:\n{task}\n\nMemory:\n{memory}"
+
+    # 2. 调用 LLM
+    try:
+        data = llm_json(sys_prompt, user_prompt)
+    except Exception as e:
+        log_state(trace, "plan_llm_error", f"LLM plan generation failed: {e}")
         return [task]
+    steps = data.get("steps", [])
+    complexity = data.get("complexity", "medium")
+
+    if not isinstance(steps, list) or not steps:
+        return [task]
+
+    result = [str(s).strip() for s in steps if str(s).strip()]
+    log_state(trace, "plan_result", f"Complexity: {complexity}\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(result)))
+    return result or [task]
 
 
 def infer_coding_targets(task: str, workspace_dir: str, trace: List[Dict[str, Any]]) -> Dict[str, str]:
