@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV PYTHONUNBUFFERED=1
 
 # 默认运行命令
-CMD ["python", "main.py"]
+CMD ["python", "agent/main.py"]

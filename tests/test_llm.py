@@ -25,7 +25,7 @@ from agent.backend.llm import (
 def mock_prompts_config():
     """模拟 prompts.yaml 内容，避免读取真实文件"""
     return {
-        "system": {
+        "system_prompt": {
             "role": "You are a test agent.",
             "principles": "Be helpful.",
             "constraints": "Stay in sandbox.",

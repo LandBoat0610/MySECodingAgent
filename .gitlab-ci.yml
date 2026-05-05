@@ -10,6 +10,12 @@ cache:
     - .cache/pip
     - .venv/
 
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  # Mock OpenAI 密钥，避免 agent 导入时报错
+  OPENAI_API_KEY: "test-key-for-ci"
+  OPENAI_BASE_URL: "https://ci-test.example.com/v1"
+
 # 1. 代码风格检查
 flake8_lint:
   stage: lint
@@ -31,33 +37,44 @@ bandit_scan:
   allow_failure: true
   needs: []
 
-# 3. 单元测试（并行，添加 JUnit 报告）
-pytest_utils:
-  stage: test
+#3. 单元测试（分片执行，生成覆盖率数据）
+# 公共安装步骤
+.test_base:
   image: python:3.11
   before_script:
-    - pip install pytest pyyaml langchain-core pytest-cov
+    - python -m venv .venv
+    - source .venv/bin/activate
+    - pip install --upgrade pip
+    # 安装项目依赖（请确保仓库根目录有 requirements.txt）
+    - pip install -r requirements.txt
+    # 安装测试所需额外工具
+    - pip install pytest pytest-cov
   script:
-    - $env:COVERAGE_FILE = ".coverage.utils"
-    - python -m pytest tests/test_utils.py tests/test_config.py tests/test_state.py
+    # 这里由子任务覆盖
+    - echo "override script"
+
+pytest_backend:
+  extends: .test_base
+  stage: test
+  script:
+    - export COVERAGE_FILE=".coverage.backend"
+    - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --junitxml=junit.utils.xml
+      --junitxml=junit.backend.xml
   artifacts:
     paths:
-      - .coverage.utils
+      - .coverage.backend
       - coverage.xml
     reports:
-      junit: junit.utils.xml
+      junit: junit.backend.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
 pytest_tools:
+  extends: .test_base
   stage: test
-  image: python:3.11
-  before_script:
-    - pip install pytest pyyaml langchain-core pytest-cov
   script:
-    - $env:COVERAGE_FILE = ".coverage.tools"
+    - export COVERAGE_FILE=".coverage.tools"
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.tools.xml
@@ -71,12 +88,10 @@ pytest_tools:
   coverage: '/TOTAL.*\s+(\d+%)/'
 
 pytest_llm:
+  extends: .test_base
   stage: test
-  image: python:3.11
-  before_script:
-    - pip install pytest pyyaml langchain-core pytest-cov
   script:
-    - $env:COVERAGE_FILE = ".coverage.llm"
+    - export COVERAGE_FILE=".coverage.llm"
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.llm.xml
@@ -89,22 +104,20 @@ pytest_llm:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-pytest_graph:
+pytest_graph_and_main:
+  extends: .test_base
   stage: test
-  image: python:3.11
-  before_script:
-    - pip install pytest pyyaml langchain-core pytest-cov
   script:
-    - $env:COVERAGE_FILE = ".coverage.graph"
-    - python -m pytest tests/test_graph.py
+    - export COVERAGE_FILE=".coverage.graph_main"
+    - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --junitxml=junit.graph.xml
+      --junitxml=junit.graph_main.xml
   artifacts:
     paths:
-      - .coverage.graph
+      - .coverage.graph_main
       - coverage.xml
     reports:
-      junit: junit.graph.xml
+      junit: junit.graph_main.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
@@ -115,7 +128,7 @@ coverage_merge:
   before_script:
     - pip install coverage
   script:
-    - python -m coverage combine .coverage.utils .coverage.tools .coverage.llm .coverage.graph
+    - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main
     - python -m coverage report -m
     - python -m coverage xml -o coverage.xml
   artifacts:
@@ -126,8 +139,8 @@ coverage_merge:
     paths:
       - coverage.xml
   needs:
-    - pytest_utils
+    - pytest_backend
     - pytest_tools
     - pytest_llm
-    - pytest_graph
+    - pytest_graph_and_main
   coverage: '/TOTAL.*\s+(\d+%)/'

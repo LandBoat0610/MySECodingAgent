@@ -217,26 +217,23 @@ class TestModifyCodeNode:
         state["target_file"] = "main.py"
         state["errors"] = [{"status": "error", "output": "SyntaxError"}]
         state["last_execution"] = {"returncode": 1}
-        # 创建目标文件
         (tmp_path / "main.py").write_text("old code")
 
-        # mock llm_json 返回修复代码
         def mock_llm_json(sys, user):
             return {
-                "diagnosis": "syntax error",
-                "updated_code": "print('fixed')",
-                "summary": "corrected",
-            }
-        monkeypatch.setattr("agent.backend.graph.llm_json", mock_llm_json)
-        # resolve_workspace_path 直接返回实际路径
+            "diagnosis": "syntax error",
+            "updated_code": "print('fixed')",
+            "summary": "corrected",
+        }
+        monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         def mock_resolve(ws, path):
             return str(tmp_path / path)
-        monkeypatch.setattr("agent.backend.graph.resolve_workspace_path", mock_resolve)
+        monkeypatch.setattr("agent.backend.utils.resolve_workspace_path", mock_resolve)
 
         new_state = modify_code_node(state)
         assert new_state["last_tool_result"]["status"] == "success"
         assert "print('fixed')" in (tmp_path / "main.py").read_text()
-        assert len(new_state["modified_files"]) >= 1  # 可能包含之前的内容
+        assert len(new_state["modified_files"]) >= 1
 
     def test_modify_code_llm_failure(self, monkeypatch, base_state):
         state = base_state.copy()
@@ -245,7 +242,7 @@ class TestModifyCodeNode:
         state["errors"] = [{"status": "error", "output": "crash"}]
         def mock_llm_json(sys, user):
             raise Exception("LLM error")
-        monkeypatch.setattr("agent.backend.graph.llm_json", mock_llm_json)
+        monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         new_state = modify_code_node(state)
         assert new_state["last_tool_result"]["status"] == "error"
 
