@@ -8,7 +8,6 @@ cache:
   key: "$CI_COMMIT_REF_SLUG"
   paths:
     - .cache/pip
-    - .venv/  # 如果您之后想恢复 venv，保留也无妨
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -31,26 +30,25 @@ bandit_scan:
   image: python:3.11
   script:
     - pip install bandit
-    - python -m bandit -r agent/ -ll || echo "Bandit scan skipped (non-critical)"
+    - python -m bandit -r agent/ -ll || echo "Bandit scan skipped"
   allow_failure: true
   needs: []
 
-# 3. 单元测试（分片，使用 --cov-file 代替环境变量）
+# 3. 单元测试（公共基类）
 .test_base:
   image: python:3.11
   before_script:
     - pip install --upgrade pip
     - pip install -r requirements.txt
     - pip install pytest pytest-cov
-  script: []  # 由具体 job 覆盖
 
 pytest_backend:
   extends: .test_base
   stage: test
   script:
+    - $env:COVERAGE_FILE = ".coverage.backend"
     - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --cov-file=.coverage.backend
       --junitxml=junit.backend.xml
   artifacts:
     paths:
@@ -65,9 +63,9 @@ pytest_tools:
   extends: .test_base
   stage: test
   script:
+    - $env:COVERAGE_FILE = ".coverage.tools"
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --cov-file=.coverage.tools
       --junitxml=junit.tools.xml
   artifacts:
     paths:
@@ -82,9 +80,9 @@ pytest_llm:
   extends: .test_base
   stage: test
   script:
+    - $env:COVERAGE_FILE = ".coverage.llm"
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --cov-file=.coverage.llm
       --junitxml=junit.llm.xml
   artifacts:
     paths:
@@ -99,9 +97,9 @@ pytest_graph_and_main:
   extends: .test_base
   stage: test
   script:
+    - $env:COVERAGE_FILE = ".coverage.graph_main"
     - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
-      --cov-file=.coverage.graph_main
       --junitxml=junit.graph_main.xml
   artifacts:
     paths:
