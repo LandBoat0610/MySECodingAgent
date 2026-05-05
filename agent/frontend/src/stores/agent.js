@@ -10,6 +10,7 @@ import {
   getPlans,
   planAction,
   getFileTree,
+  stopSession,
   createWebSocket
 } from '../api/index.js'
 import { persistProjectId, getPersistedProjectId, persistSessionId, getPersistedSessionId } from '../utils/persistence.js'
@@ -28,9 +29,11 @@ export const useAgentStore = defineStore('agent', () => {
   const finalAnswer = ref('')
   const agentRunning = ref(false)
   const wsConnection = ref(null)
-  const wsReconnecting = ref(false)
   const loading = ref(false)
   const error = ref(null)
+  const wsReconnectAttempts = ref(0)
+  const WS_MAX_RECONNECT = 5
+  const wsIntentionalClose = ref(false)
 
   const selectedProject = computed(() => projects.value.find(p => p.id === selectedProjectId.value) || null)
   const selectedSession = computed(() => sessions.value.find(s => s.id === selectedSessionId.value) || null)
@@ -50,7 +53,7 @@ export const useAgentStore = defineStore('agent', () => {
     clearError()
     try {
       projects.value = await getProjects()
-      if (selectedProjectId.value && !projects.value.find(p => p.id === selectedProjectId.value)) {
+      if (selectedProjectId.value && projects.value.length > 0 && !projects.value.find(p => p.id === selectedProjectId.value)) {
         selectedProjectId.value = null
         persistProjectId(null)
       }
@@ -70,6 +73,7 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function selectProject(projectId) {
+    disconnectWebSocket()
     selectedProjectId.value = projectId
     persistProjectId(projectId)
     selectedSessionId.value = null
@@ -91,7 +95,7 @@ export const useAgentStore = defineStore('agent', () => {
     clearError()
     try {
       sessions.value = await getSessions(selectedProjectId.value)
-      if (selectedSessionId.value && !sessions.value.find(s => s.id === selectedSessionId.value)) {
+      if (selectedSessionId.value && sessions.value.length > 0 && !sessions.value.find(s => s.id === selectedSessionId.value)) {
         selectedSessionId.value = null
         persistSessionId(null)
       }
@@ -109,6 +113,7 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function selectSession(sessionId) {
+    disconnectWebSocket()
     selectedSessionId.value = sessionId
     persistSessionId(sessionId)
     plans.value = []
@@ -136,7 +141,7 @@ export const useAgentStore = defineStore('agent', () => {
 
       await fetchPlans()
 
-      if (['running', 'awaiting_approval', 'approved'].includes(stateResp.status)) {
+      if (['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step'].includes(stateResp.status)) {
         connectWebSocket()
       }
 
@@ -173,17 +178,19 @@ export const useAgentStore = defineStore('agent', () => {
     if (!selectedProjectId.value || !selectedSessionId.value) return
 
     if (wsConnection.value) {
+      wsIntentionalClose.value = true
       try { wsConnection.value.close() } catch (e) { /* ignore */ }
       wsConnection.value = null
     }
 
+    wsIntentionalClose.value = false
     agentRunning.value = true
+    wsReconnectAttempts.value = 0
     const ws = createWebSocket(selectedProjectId.value, selectedSessionId.value)
     wsConnection.value = ws
 
     ws.onopen = () => {
       console.log('WebSocket connected')
-      wsReconnecting.value = false
     }
 
     ws.onmessage = (event) => {
@@ -191,6 +198,9 @@ export const useAgentStore = defineStore('agent', () => {
         const data = JSON.parse(event.data)
 
         if (data.error) {
+          if (data.code === 'AGENT_STOPPING') {
+            sessionStatus.value = 'stopping'
+          }
           setError(data.error)
           agentRunning.value = false
           return
@@ -198,6 +208,12 @@ export const useAgentStore = defineStore('agent', () => {
 
         if (data.type === 'trace' && data.data) {
           traceLogs.value.push(data.data)
+          if (data.data.session_status) {
+            sessionStatus.value = data.data.session_status
+            if (data.data.session_status === 'awaiting_approval') {
+              fetchPlans()
+            }
+          }
         }
 
         if (data.phase === 'start') {
@@ -206,6 +222,7 @@ export const useAgentStore = defineStore('agent', () => {
         }
 
         if (data.phase === 'done') {
+          wsIntentionalClose.value = true
           agentRunning.value = false
           finalAnswer.value = data.final_answer || ''
           sessionStatus.value = data.status || 'completed'
@@ -214,6 +231,7 @@ export const useAgentStore = defineStore('agent', () => {
         }
 
         if (data.phase === 'cancelled') {
+          wsIntentionalClose.value = true
           agentRunning.value = false
           sessionStatus.value = 'stopped'
           fetchPlans()
@@ -226,13 +244,24 @@ export const useAgentStore = defineStore('agent', () => {
     ws.onclose = () => {
       console.log('WebSocket disconnected')
       wsConnection.value = null
-      agentRunning.value = false
-      if (sessionStatus.value === 'running' && !wsReconnecting.value) {
-        wsReconnecting.value = true
-        setTimeout(() => {
-          wsReconnecting.value = false
-          restoreSessionState()
-        }, 2000)
+      if (wsIntentionalClose.value) {
+        wsIntentionalClose.value = false
+        agentRunning.value = false
+        return
+      }
+      const activeStates = ['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step']
+      if (activeStates.includes(sessionStatus.value)) {
+        wsReconnectAttempts.value++
+        if (wsReconnectAttempts.value <= WS_MAX_RECONNECT) {
+          setTimeout(() => {
+            connectWebSocket()
+          }, 2000 * wsReconnectAttempts.value)
+        } else {
+          agentRunning.value = false
+          setError('WebSocket 连接断开，已达到最大重连次数，请手动刷新页面')
+        }
+      } else {
+        agentRunning.value = false
       }
     }
 
@@ -243,6 +272,7 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function disconnectWebSocket() {
+    wsIntentionalClose.value = true
     if (wsConnection.value) {
       try { wsConnection.value.close() } catch (e) { /* ignore */ }
       wsConnection.value = null
@@ -273,10 +303,33 @@ export const useAgentStore = defineStore('agent', () => {
       if (plan) {
         plan.status = resp.status
       }
+      if (action === 'agree' || action === 'refine') {
+        sessionStatus.value = 'running'
+        connectWebSocket()
+      } else if (action === 'stop') {
+        sessionStatus.value = 'stopped'
+        agentRunning.value = false
+        disconnectWebSocket()
+      } else if (action === 'skip') {
+        sessionStatus.value = 'skipped'
+        agentRunning.value = false
+      }
       return resp
     } catch (e) {
       setError(e)
       throw e
+    }
+  }
+
+  async function doStopSession() {
+    clearError()
+    try {
+      await stopSession(selectedProjectId.value, selectedSessionId.value)
+      sessionStatus.value = 'stopped'
+      agentRunning.value = false
+      disconnectWebSocket()
+    } catch (e) {
+      setError(e)
     }
   }
 
@@ -298,7 +351,6 @@ export const useAgentStore = defineStore('agent', () => {
     finalAnswer,
     agentRunning,
     wsConnection,
-    wsReconnecting,
     loading,
     error,
     selectedProject,
@@ -317,6 +369,7 @@ export const useAgentStore = defineStore('agent', () => {
     disconnectWebSocket,
     doSendChat,
     doPlanAction,
+    doStopSession,
     addAssistantMessage,
     clearError
   }

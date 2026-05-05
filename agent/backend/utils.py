@@ -172,6 +172,8 @@ def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optio
         "phase": phase, 
         "content": safe_trim(content, 1600), 
         "meta": meta or {}}
+    if state and isinstance(state, dict) and "status" in state:
+        item["session_status"] = state["status"]
     trace.append(item)
     print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
     

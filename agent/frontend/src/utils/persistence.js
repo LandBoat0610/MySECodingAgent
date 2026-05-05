@@ -4,19 +4,29 @@ const KEYS = {
 }
 
 export function persistProjectId(id) {
-  localStorage.setItem(KEYS.PROJECT_ID, id)
+  if (id) {
+    localStorage.setItem(KEYS.PROJECT_ID, id)
+  } else {
+    localStorage.removeItem(KEYS.PROJECT_ID)
+  }
 }
 
 export function getPersistedProjectId() {
-  return localStorage.getItem(KEYS.PROJECT_ID) || null
+  const val = localStorage.getItem(KEYS.PROJECT_ID)
+  return val || null
 }
 
 export function persistSessionId(id) {
-  localStorage.setItem(KEYS.SESSION_ID, id)
+  if (id) {
+    localStorage.setItem(KEYS.SESSION_ID, id)
+  } else {
+    localStorage.removeItem(KEYS.SESSION_ID)
+  }
 }
 
 export function getPersistedSessionId() {
-  return localStorage.getItem(KEYS.SESSION_ID) || null
+  const val = localStorage.getItem(KEYS.SESSION_ID)
+  return val || null
 }
 
 export function clearPersistence() {

@@ -147,18 +147,14 @@ class TestUtils:
         assert data["returncode"] == 1
 
     def test_tool_result_trims_output(self):
-        """output 超限时 safe_trim 会被调用，返回带截断提示的结果"""
-    from agent.backend.config import MAX_TOOL_OUTPUT
-    # 构造一个比 MAX_TOOL_OUTPUT 长 100 的字符串
-    long_msg = "X" * (MAX_TOOL_OUTPUT + 100)
-    ret = tool_result("success", long_msg)
-    data = json.loads(ret)
-    output = data["output"]
-    # 开头是前 MAX_TOOL_OUTPUT 个字符
-    assert output.startswith("X" * MAX_TOOL_OUTPUT)
-    # 存在截断标记和具体的字符数
-    assert "[truncated" in output
-    assert "100 chars]" in output   # 因为 100 是被截掉的部分
+        from agent.backend.config import MAX_TOOL_OUTPUT
+        long_msg = "X" * (MAX_TOOL_OUTPUT + 100)
+        ret = tool_result("success", long_msg)
+        data = json.loads(ret)
+        output = data["output"]
+        assert output.startswith("X" * MAX_TOOL_OUTPUT)
+        assert "[truncated" in output
+        assert "100 chars]" in output
 
     def test_tool_result_with_meta(self):
         """包含额外元数据"""

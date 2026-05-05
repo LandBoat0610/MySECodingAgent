@@ -102,9 +102,10 @@ def execute_bash(command: str) -> str:
             cwd=workspace_dir, 
             capture_output=True, 
             text=True, 
-            encoding="utf-8", # 强制使用 utf-8 解析输出
-            errors="replace", # 遇到无法解析的乱码时，用问号替换而不是直接让程序崩溃
+            encoding="utf-8",
+            errors="replace",
             timeout=20,
+            executable=os.environ.get("COMSPEC", None),
             )
         combined = f"STDOUT:\n{safe_trim(result.stdout)}\n\nSTDERR:\n{safe_trim(result.stderr)}"
         return tool_result(

@@ -66,9 +66,6 @@ async function handleAction(action) {
   const plan = store.pendingPlans[0]
   try {
     await store.doPlanAction(plan.id, action)
-    if (action === 'agree') {
-      store.connectWebSocket()
-    }
     await store.fetchPlans()
     await store.restoreSessionState()
   } catch (e) {

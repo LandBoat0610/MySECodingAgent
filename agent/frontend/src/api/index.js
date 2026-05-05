@@ -42,6 +42,10 @@ export function getFileTree(projectId) {
   return api.get(`/projects/${projectId}/files`).then(r => r.data)
 }
 
+export function stopSession(projectId, sessionId) {
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/stop`).then(r => r.data)
+}
+
 export function createWebSocket(projectId, sessionId) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.host
