@@ -12,11 +12,6 @@ const routes: RouteRecordRaw[] = [
     name: 'Project',
     component: () => import('@/views/Project.vue'),
   },
-  {
-    path: '/project/:projectId/session/:sessionId',
-    name: 'Session',
-    component: () => import('@/views/Session.vue'),
-  },
 ]
 
 const router = createRouter({
