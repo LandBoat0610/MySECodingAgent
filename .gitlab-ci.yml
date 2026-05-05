@@ -8,11 +8,10 @@ cache:
   key: "$CI_COMMIT_REF_SLUG"
   paths:
     - .cache/pip
-    - .venv/
+    - .venv/  # 如果您之后想恢复 venv，保留也无妨
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
-  # Mock OpenAI 密钥，避免 agent 导入时报错
   OPENAI_API_KEY: "test-key-for-ci"
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
 
@@ -30,34 +29,28 @@ flake8_lint:
 bandit_scan:
   stage: security
   image: python:3.11
-  before_script:
-    - pip install bandit
   script:
+    - pip install bandit
     - python -m bandit -r agent/ -ll || echo "Bandit scan skipped (non-critical)"
   allow_failure: true
   needs: []
 
-#3. 单元测试（分片执行，生成覆盖率数据）
-# 公共安装步骤
+# 3. 单元测试（分片，使用 --cov-file 代替环境变量）
 .test_base:
   image: python:3.11
   before_script:
     - pip install --upgrade pip
-    # 安装项目依赖（请确保仓库根目录有 requirements.txt）
     - pip install -r requirements.txt
-    # 安装测试所需额外工具
     - pip install pytest pytest-cov
-  script:
-    # 这里由子任务覆盖
-    - echo "override script"
+  script: []  # 由具体 job 覆盖
 
 pytest_backend:
   extends: .test_base
   stage: test
   script:
-    - export COVERAGE_FILE=".coverage.backend"
     - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --cov-file=.coverage.backend
       --junitxml=junit.backend.xml
   artifacts:
     paths:
@@ -72,9 +65,9 @@ pytest_tools:
   extends: .test_base
   stage: test
   script:
-    - export COVERAGE_FILE=".coverage.tools"
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --cov-file=.coverage.tools
       --junitxml=junit.tools.xml
   artifacts:
     paths:
@@ -89,9 +82,9 @@ pytest_llm:
   extends: .test_base
   stage: test
   script:
-    - export COVERAGE_FILE=".coverage.llm"
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --cov-file=.coverage.llm
       --junitxml=junit.llm.xml
   artifacts:
     paths:
@@ -106,9 +99,9 @@ pytest_graph_and_main:
   extends: .test_base
   stage: test
   script:
-    - export COVERAGE_FILE=".coverage.graph_main"
     - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --cov-file=.coverage.graph_main
       --junitxml=junit.graph_main.xml
   artifacts:
     paths:
@@ -119,7 +112,7 @@ pytest_graph_and_main:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# 4. 合并覆盖率报告
+# 4. 合并覆盖率
 coverage_merge:
   stage: report
   image: python:3.11
