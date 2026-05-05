@@ -160,25 +160,50 @@ async function loadPlans() {
 }
 
 function connectWebSocket() {
-  ws.value = createWebSocketConnection(projectId, sessionId)
-  
-  ws.value.onopen = () => {
-    store.setConnected(true)
-    store.addMessage('system', 'WebSocket 连接已建立')
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    return
   }
   
-  ws.value.onmessage = (event) => {
-    const data: WebSocketMessage = JSON.parse(event.data)
-    handleWebSocketMessage(data)
-  }
-  
-  ws.value.onclose = () => {
-    store.setConnected(false)
-    store.addMessage('system', 'WebSocket 连接已关闭')
-  }
-  
-  ws.value.onerror = (error) => {
-    store.addMessage('error', 'WebSocket 连接错误')
+  try {
+    ws.value = createWebSocketConnection(projectId, sessionId)
+    
+    ws.value.onopen = () => {
+      store.setConnected(true)
+      store.addMessage('system', 'WebSocket 连接已建立')
+    }
+    
+    ws.value.onmessage = (event) => {
+      try {
+        const data: WebSocketMessage = JSON.parse(event.data)
+        handleWebSocketMessage(data)
+      } catch (e) {
+        console.error('解析 WebSocket 消息失败:', e)
+        store.addMessage('error', '解析消息失败')
+      }
+    }
+    
+    ws.value.onclose = (event) => {
+      store.setConnected(false)
+      if (!event.wasClean) {
+        store.addMessage('warning', 'WebSocket 连接异常关闭，尝试重连...')
+        // 3秒后重连
+        setTimeout(() => {
+          if (route.path.includes('/session/')) {
+            connectWebSocket()
+          }
+        }, 3000)
+      } else {
+        store.addMessage('system', 'WebSocket 连接已关闭')
+      }
+    }
+    
+    ws.value.onerror = (error) => {
+      console.error('WebSocket 错误:', error)
+      store.addMessage('error', 'WebSocket 连接错误，请检查后端服务是否运行')
+    }
+  } catch (error) {
+    console.error('创建 WebSocket 失败:', error)
+    store.addMessage('error', '无法创建 WebSocket 连接')
   }
 }
 

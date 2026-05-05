@@ -69,8 +69,14 @@ export const fileApi = {
   },
 }
 
-// WebSocket 连接
+// WebSocket 连接 - 直接连接后端服务
 export function createWebSocketConnection(projectId: string, sessionId: string): WebSocket {
+  // 开发环境直接连接后端，生产环境使用相对路径
+  const isDev = import.meta.env.DEV
+  if (isDev) {
+    const wsUrl = `ws://127.0.0.1:8000/projects/${projectId}/sessions/${sessionId}/chat/stream`
+    return new WebSocket(wsUrl)
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const wsUrl = `${protocol}//${window.location.host}/api/projects/${projectId}/sessions/${sessionId}/chat/stream`
   return new WebSocket(wsUrl)

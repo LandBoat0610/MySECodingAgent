@@ -221,10 +221,14 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
         def on_log(item):
             if cancel_event.is_set():
                 return
-            asyncio.run_coroutine_threadsafe(
-                websocket.send_json({"type": "trace", "data": item}),
-                loop,
-            )
+            try:
+                if not loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        websocket.send_json({"type": "trace", "data": item}),
+                        loop,
+                    )
+            except Exception:
+                pass
 
         register_log_callback(on_log)
         
