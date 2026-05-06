@@ -8,7 +8,6 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -22,6 +21,7 @@ from agent.backend.schemas import (
     PlanActionRequest,
     PlanActionResponse,
     FileTreeResponse,
+    FileContentResponse,
 )
 from agent.backend.utils import ensure_workspace
 
@@ -30,9 +30,8 @@ async def lifespan(app):
     init_db()
     yield
 
-app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 load_dotenv()
-app = FastAPI(title="Agent Platform", version="0.1.0")
+app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 
 WORKSPACES_ROOT = os.path.abspath("workspaces")
 os.makedirs(WORKSPACES_ROOT, exist_ok=True)
@@ -71,6 +70,32 @@ def create_or_open_project(req: ProjectCreateRequest):
         created_at=now,
         description=req.description,
     )
+
+# ------------------ 2.5 删除项目 ------------------
+@app.delete("/projects/{project_id}")
+def delete_project(project_id: str):
+    with get_connection() as conn:
+        proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+        sessions = conn.execute("SELECT id FROM sessions WHERE project_id = ?", (project_id,)).fetchall()
+        session_ids = [s["id"] for s in sessions]
+
+        for sid in session_ids:
+            conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+            conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+
+        conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+    for sid in session_ids:
+        cleanup_cancel_event(sid)
+        runner = _agent_runners.pop(sid, None)
+        if runner and runner.is_alive():
+            runner.cancel_event.set()
+
+    return {"status": "deleted", "project_id": project_id}
 
 # ------------------ 3. 获取会话列表 ------------------
 @app.get("/projects/{project_id}/sessions", response_model=list[SessionResponse])
@@ -299,8 +324,7 @@ def get_or_create_agent_runner(sid: str) -> AgentRunner:
         _agent_runners[sid] = AgentRunner(sid)
     return _agent_runners[sid]
 
-_shared_log_callbacks_lock = threading.Lock()
-
+from agent.backend.utils import _LOG_CALLBACKS_LOCK
 
 @app.websocket("/projects/{project_id}/sessions/{sid}/chat/stream")
 async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
@@ -338,7 +362,7 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
         runner.send_to_ws({"type": "trace", "data": item})
 
     from agent.backend.utils import _LOG_CALLBACKS
-    with _shared_log_callbacks_lock:
+    with _LOG_CALLBACKS_LOCK:
         _LOG_CALLBACKS.append(on_log)
 
     if need_start:
@@ -374,7 +398,7 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             pass
     finally:
         from agent.backend.utils import _LOG_CALLBACKS as cb_list
-        with _shared_log_callbacks_lock:
+        with _LOG_CALLBACKS_LOCK:
             if on_log in cb_list:
                 cb_list.remove(on_log)
         runner.clear_ws_if_same(websocket)
@@ -517,3 +541,38 @@ def get_file_tree(project_id: str):
         return items
 
     return build_tree(workspace)
+
+
+# ------------------ 10.5 获取项目文件内容 ------------------
+@app.get("/projects/{project_id}/files/content", response_model=FileContentResponse)
+def get_file_content(project_id: str, path: str):
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="文件路径不能为空")
+
+    with get_connection() as conn:
+        proj = conn.execute(
+            "SELECT workspace_path FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if not proj:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+    workspace = os.path.abspath(proj["workspace_path"])
+    full_path = os.path.abspath(os.path.join(workspace, path))
+
+    if not str(full_path).startswith(str(workspace) + os.sep) and full_path != workspace:
+        raise HTTPException(status_code=403, detail="路径超出项目工作区范围")
+
+    if full_path == workspace or not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    size = os.path.getsize(full_path)
+    if size > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件过大，超过 10MB 限制")
+
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return FileContentResponse(path=path, content=content, size=size, encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="文件非文本格式，无法预览")

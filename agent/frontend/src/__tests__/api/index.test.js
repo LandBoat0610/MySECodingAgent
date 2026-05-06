@@ -132,4 +132,31 @@ describe('API layer', () => {
             })
         })
     })
+
+    describe('deleteProject', () => {
+        it('should call DELETE /projects/:projectId', async () => {
+            axios.delete.mockResolvedValue({ data: { status: 'deleted', project_id: 'proj-1' } })
+            const result = await api.deleteProject('proj-1')
+            expect(axios.delete).toHaveBeenCalledWith('/projects/proj-1')
+            expect(result).toEqual({ status: 'deleted', project_id: 'proj-1' })
+        })
+    })
+
+    describe('getFileContent', () => {
+        it('should call GET /projects/:projectId/files/content with path param', async () => {
+            axios.get.mockResolvedValue({ data: { path: 'test.txt', content: 'hello', size: 5, encoding: 'utf-8' } })
+            const result = await api.getFileContent('proj-1', 'test.txt')
+            expect(axios.get).toHaveBeenCalledWith('/projects/proj-1/files/content', { params: { path: 'test.txt' } })
+            expect(result).toEqual({ path: 'test.txt', content: 'hello', size: 5, encoding: 'utf-8' })
+        })
+    })
+
+    describe('stopSession', () => {
+        it('should call POST /projects/:projectId/sessions/:sessionId/stop', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'stopped', session_id: 'sess-1' } })
+            const result = await api.stopSession('proj-1', 'sess-1')
+            expect(axios.post).toHaveBeenCalledWith('/projects/proj-1/sessions/sess-1/stop')
+            expect(result).toEqual({ status: 'stopped', session_id: 'sess-1' })
+        })
+    })
 })

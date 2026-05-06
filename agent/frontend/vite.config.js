@@ -9,7 +9,13 @@ export default defineConfig({
       '/projects': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-        ws: true
+        ws: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED') return
+          })
+          proxy.on('close', () => {})
+        }
       },
       '/docs': {
         target: 'http://127.0.0.1:8000',

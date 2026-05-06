@@ -25,8 +25,8 @@ const store = useAgentStore()
 const filePreviewRef = ref(null)
 
 function handleSelectFile(node) {
-  if (filePreviewRef.value) {
-    filePreviewRef.value.setSelectedFile(node)
+  if (node.type === 'file') {
+    store.fetchFileContent(node.path)
   }
 }
 
