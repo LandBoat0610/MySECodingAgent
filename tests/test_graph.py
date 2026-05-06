@@ -58,9 +58,9 @@ def base_state() -> AgentState:
 class TestPlannerNode:
     def test_planner_normal(self, monkeypatch, base_state):
         # mock create_plan, infer_coding_targets, extract_code_context
-        def mock_create_plan(task, memory, trace):
+        def mock_create_plan(task, memory, trace, state=None):
             return ["step_a", "step_b"]
-        def mock_infer_targets(task, ws, trace):
+        def mock_infer_targets(task, ws, trace, state=None):
             return {"target_file": "t.py", "run_command": "python t.py"}
         def mock_extract(target, ws):
             return "code"
@@ -219,7 +219,7 @@ class TestModifyCodeNode:
         state["last_execution"] = {"returncode": 1}
         (tmp_path / "main.py").write_text("old code")
 
-        def mock_llm_json(sys, user):
+        def mock_llm_json(sys, user, state=None):
             return {
             "diagnosis": "syntax error",
             "updated_code": "print('fixed')",
@@ -240,7 +240,7 @@ class TestModifyCodeNode:
         state["workspace_dir"] = "/tmp"
         state["target_file"] = "main.py"
         state["errors"] = [{"status": "error", "output": "crash"}]
-        def mock_llm_json(sys, user):
+        def mock_llm_json(sys, user, state=None):
             raise Exception("LLM error")
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         new_state = modify_code_node(state)

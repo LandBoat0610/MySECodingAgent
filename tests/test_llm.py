@@ -70,53 +70,53 @@ class TestBuildSystemPrompt:
 
 class TestCreatePlan:
     def test_normal_plan(self, monkeypatch):
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             return {"steps": ["Step 1", "Step 2"]}
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
-        steps = create_plan("task", "memory", [])
+        steps = create_plan("task", "memory", [], {})
         assert steps == ["Step 1", "Step 2"]
 
     def test_empty_steps_fallback(self, monkeypatch):
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             return {"steps": []}
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
-        steps = create_plan("task", "", [])
+        steps = create_plan("task", "", [], {})
         assert steps == ["task"]
 
     def test_llm_error_fallback(self, monkeypatch):
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             raise Exception("API down")
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
-        steps = create_plan("task", "", [])
+        steps = create_plan("task", "", [], {})
         assert steps == ["task"]
 
 
 class TestInferCodingTargets:
     def test_normal_inference(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             return {"target_file": "src/app.py", "run_command": "python src/app.py"}
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
-        result = infer_coding_targets("build a web app", workspace, [])
+        result = infer_coding_targets("build a web app", workspace, [], {})
         # 跨平台比较路径（在 Windows 下可能会转换成反斜杠）
         assert Path(result["target_file"]) == Path("src/app.py")
         assert result["run_command"] == "python src/app.py"
 
     def test_prompt_load_failure(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             return {"target_file": "fallback.py", "run_command": "python fallback.py"}
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         monkeypatch.setattr("agent.backend.llm.load_prompts", MagicMock(side_effect=Exception("no config")))
-        result = infer_coding_targets("task", workspace, [])
+        result = infer_coding_targets("task", workspace, [], {})
         assert Path(result["target_file"]) == Path("fallback.py")
 
     def test_llm_error_uses_fallback(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
-        def mock_llm_json(system, user):
+        def mock_llm_json(system, user, state=None):
             raise Exception("fail")
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
-        result = infer_coding_targets("task", workspace, [])
+        result = infer_coding_targets("task", workspace, [], {})
         assert Path(result["target_file"]) == Path("main.py")
         assert result["run_command"] == "python main.py"
 

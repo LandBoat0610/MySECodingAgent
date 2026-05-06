@@ -85,3 +85,75 @@ def test_file_tree_nested():
     dict_tree = tree.model_dump()
     assert len(dict_tree["children"]) == 2
     assert dict_tree["children"][1]["type"] == "directory"
+
+
+# ---------- Eval schemas ----------
+class TestEvalSchemas:
+    def test_eval_dataset_row(self):
+        row = schemas.EvalDatasetRow(
+            id="ds1", name="Test DS", created_at="now", item_count=5
+        )
+        assert row.id == "ds1"
+        assert row.item_count == 5
+        assert row.storage_path is None
+
+    def test_eval_dataset_json_create(self):
+        body = schemas.EvalDatasetJsonCreate(name="ds", items=[{"description": "t"}])
+        assert body.name == "ds"
+        assert len(body.items) == 1
+
+    def test_eval_dataset_json_create_default_name(self):
+        body = schemas.EvalDatasetJsonCreate(items=[{"description": "t"}])
+        assert body.name == ""
+
+    def test_eval_task_create_request(self):
+        req = schemas.EvalTaskCreateRequest(
+            name="My Task", dataset_id="ds1", eval_method="result"
+        )
+        assert req.eval_method == "result"
+
+    def test_eval_task_create_request_default_method(self):
+        req = schemas.EvalTaskCreateRequest(name="Task", dataset_id="ds1")
+        assert req.eval_method == "result"
+
+    def test_eval_task_response(self):
+        resp = schemas.EvalTaskResponse(
+            id="t1",
+            name="Task",
+            created_at="now",
+            updated_at="now",
+            dataset_id="ds1",
+            eval_method="result",
+            status="pending",
+        )
+        assert resp.id == "t1"
+        assert resp.total_items == 0
+
+    def test_eval_task_patch_request(self):
+        req = schemas.EvalTaskPatchRequest(name="Renamed", eval_method="process")
+        assert req.name == "Renamed"
+        assert req.eval_method == "process"
+
+    def test_eval_task_result_response(self):
+        resp = schemas.EvalTaskResultResponse(
+            id="r1",
+            task_id="t1",
+            item_index=0,
+            status="completed",
+            passed=True,
+        )
+        assert resp.item_index == 0
+        assert resp.passed is True
+        assert resp.score_detail == {}
+        assert resp.ragas_json == {}
+
+    def test_agent_config_response(self):
+        resp = schemas.AgentConfigResponse(model="gpt-4o", version_label="v1")
+        data = resp.model_dump()
+        assert data["model"] == "gpt-4o"
+        assert data["version_label"] == "v1"
+
+    def test_agent_config_update_request(self):
+        req = schemas.AgentConfigUpdateRequest(model="gpt-4-turbo")
+        assert req.model == "gpt-4-turbo"
+        assert req.version_label is None

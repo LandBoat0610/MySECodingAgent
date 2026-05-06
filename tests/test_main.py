@@ -447,3 +447,144 @@ class TestFileContent:
             response = client.get("/projects/p1/files/content?path=large.txt")
             assert response.status_code == 413
             assert "过大" in response.json()["detail"]
+
+
+# ==================== 8. Evaluation API ====================
+class TestEvalDatasets:
+    def test_list_datasets_empty(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchall.return_value = []
+        with patch("agent.backend.eval_router.list_datasets", return_value=[]):
+            response = client.get("/eval/datasets")
+            assert response.status_code == 200
+            assert response.json() == []
+
+    def test_list_datasets_with_data(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchall.return_value = [
+            {"id": "ds1", "name": "DS1", "created_at": "now", "item_count": 3, "storage_path": "/path/ds1.json"}
+        ]
+        with patch("agent.backend.eval_router.list_datasets", return_value=mock_cursor.fetchall.return_value):
+            response = client.get("/eval/datasets")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 1
+            assert data[0]["id"] == "ds1"
+
+    def test_get_dataset_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = None
+        with patch("agent.backend.eval_router.get_dataset_row", return_value=None):
+            response = client.get("/eval/datasets/nonexistent")
+            assert response.status_code == 404
+
+    def test_create_dataset_json(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.backend.eval_router.create_dataset_from_payload") as mock_create:
+            mock_create.return_value = {
+                "id": "new_ds", "name": "New", "created_at": "now", "item_count": 2
+            }
+            response = client.post("/eval/datasets", json={
+                "name": "New", "items": [{"description": "t1"}, {"description": "t2"}]
+            })
+            assert response.status_code == 200
+            data = response.json()
+            assert data["id"] == "new_ds"
+
+    def test_delete_dataset_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.backend.eval_router.delete_dataset", side_effect=LookupError):
+            response = client.delete("/eval/datasets/nonexistent")
+            assert response.status_code == 404
+
+
+class TestEvalTasks:
+    def test_list_tasks_empty(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchall.return_value = []
+        with patch("agent.backend.eval_router.list_eval_tasks", return_value=[]):
+            response = client.get("/eval/tasks")
+            assert response.status_code == 200
+            assert response.json() == []
+
+    def test_list_tasks_with_data(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_data = [
+            {
+                "id": "t1", "name": "Task1", "created_at": "now", "updated_at": "now",
+                "dataset_id": "ds1", "dataset_name": "DS1", "eval_method": "result",
+                "agent_model_snapshot": "", "agent_version_label_snapshot": "",
+                "status": "pending", "error_message": "", "total_items": 5,
+                "completed_items": 0, "passed_count": 0, "failed_count": 0,
+            }
+        ]
+        with patch("agent.backend.eval_router.list_eval_tasks", return_value=mock_data):
+            response = client.get("/eval/tasks")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 1
+            assert data[0]["id"] == "t1"
+
+    def test_get_task_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.backend.eval_router.list_eval_tasks", return_value=[]), \
+             patch("agent.backend.eval_router.get_eval_task", side_effect=LookupError("不存在")):
+            response = client.get("/eval/tasks/nonexistent")
+            assert response.status_code == 404
+
+    def test_create_task(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_result = {
+            "id": "new_task", "name": "Eval1", "created_at": "now", "updated_at": "now",
+            "dataset_id": "ds1", "dataset_name": "DS1", "eval_method": "result",
+            "agent_model_snapshot": "", "agent_version_label_snapshot": "",
+            "status": "pending", "error_message": "", "total_items": 3,
+            "completed_items": 0, "passed_count": 0, "failed_count": 0,
+        }
+        with patch("agent.backend.eval_router.create_eval_task", return_value={"id": "new_task"}), \
+             patch("agent.backend.eval_router.list_eval_tasks", return_value=[mock_result]):
+            response = client.post("/eval/tasks", json={
+                "name": "Eval1", "dataset_id": "ds1", "eval_method": "result"
+            })
+            assert response.status_code == 200
+
+    def test_delete_task_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.backend.eval_router.delete_eval_task", side_effect=LookupError("不存在")):
+            response = client.delete("/eval/tasks/nonexistent")
+            assert response.status_code == 404
+
+
+class TestEvalTaskResults:
+    def test_get_results(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = None
+        with patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.backend.eval_router.list_task_results", return_value=[]):
+            response = client.get("/eval/tasks/t1/results")
+            assert response.status_code == 200
+            assert response.json() == []
+
+
+class TestAgentConfigApi:
+    def test_get_config(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.main.get_agent_config") as mock_get:
+            mock_get.return_value = {"model": "gpt-4o", "version_label": "v1"}
+            response = client.get("/settings/agent-config")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["model"] == "gpt-4o"
+
+    def test_update_config(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        with patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.main.set_agent_config") as mock_set:
+            mock_set.return_value = {"model": "gpt-4-turbo", "version_label": "v2"}
+            response = client.put("/settings/agent-config", json={
+                "model": "gpt-4-turbo", "version_label": "v2"
+            })
+            assert response.status_code == 200
+            data = response.json()
+            assert data["model"] == "gpt-4-turbo"
