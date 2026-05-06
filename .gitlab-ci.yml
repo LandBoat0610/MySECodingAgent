@@ -40,14 +40,14 @@ bandit_scan:
   before_script:
     - pip install --upgrade pip
     - pip install -r requirements.txt
-    - pip install pytest pytest-cov
+    - pip install pytest pytest-cov python-multipart
 
 pytest_backend:
   extends: .test_base
   stage: test
   script:
     - $env:COVERAGE_FILE = ".coverage.backend"
-    - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
+    - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py tests/test_platform_settings.py tests/test_eval_storage.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.backend.xml
   artifacts:
@@ -110,6 +110,23 @@ pytest_graph_and_main:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
+pytest_eval:
+  extends: .test_base
+  stage: test
+  script:
+    - $env:COVERAGE_FILE = ".coverage.eval"
+    - python -m pytest tests/test_eval_dataset.py tests/test_eval_scoring.py tests/test_eval_security.py tests/test_runtime_metrics.py
+      --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --junitxml=junit.eval.xml
+  artifacts:
+    paths:
+      - .coverage.eval
+      - coverage.xml
+    reports:
+      junit: junit.eval.xml
+    expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
 # 4. 前端单元测试
 vitest_frontend:
   stage: test
@@ -138,7 +155,7 @@ coverage_merge:
   before_script:
     - pip install coverage
   script:
-    - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main
+    - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main .coverage.eval
     - python -m coverage report -m
     - python -m coverage xml -o coverage.xml
   artifacts:
@@ -153,4 +170,5 @@ coverage_merge:
     - pytest_tools
     - pytest_llm
     - pytest_graph_and_main
+    - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
