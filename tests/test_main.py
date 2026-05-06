@@ -309,7 +309,6 @@ class TestFileTree:
     def test_file_tree_success(self, mock_db, tmp_path):
         mock_conn, mock_cursor = mock_db
         mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
-        # 创建一些文件
         (tmp_path / "file1.txt").write_text("hello")
         (tmp_path / "subdir").mkdir()
         (tmp_path / "subdir" / "file2.py").write_text("print(1)")
@@ -317,13 +316,134 @@ class TestFileTree:
             response = client.get("/projects/p1/files")
             assert response.status_code == 200
             tree = response.json()
-            # 简单检查返回的列表包含两个元素
             assert len(tree) == 2
             names = [item["path"] for item in tree]
             assert "file1.txt" in names
             assert "subdir" in names
-            # 检查目录类型和 children
             for item in tree:
                 if item["path"] == "subdir":
                     assert item["type"] == "directory"
                     assert len(item["children"]) == 1
+
+
+# ==================== 8. Delete Project ====================
+class TestDeleteProject:
+    def test_delete_project_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = None
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.delete("/projects/badid")
+            assert response.status_code == 404
+
+    def test_delete_project_success(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"id": "p1"}
+        mock_cursor.fetchall.return_value = [{"id": "s1"}, {"id": "s2"}]
+        with patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.main.cleanup_cancel_event") as mock_cleanup, \
+             patch("agent.main._agent_runners", {}):
+            response = client.delete("/projects/p1")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "deleted"
+            assert data["project_id"] == "p1"
+            assert mock_cleanup.call_count == 2
+
+    def test_delete_project_with_running_agent(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"id": "p1"}
+        mock_cursor.fetchall.return_value = [{"id": "s1"}]
+        mock_runner = MagicMock()
+        mock_runner.is_alive.return_value = True
+        mock_runner.cancel_event = MagicMock()
+        with patch("agent.main.get_connection", return_value=mock_conn), \
+             patch("agent.main.cleanup_cancel_event"), \
+             patch("agent.main._agent_runners", {"s1": mock_runner}):
+            response = client.delete("/projects/p1")
+            assert response.status_code == 200
+            mock_runner.cancel_event.set.assert_called_once()
+
+
+# ==================== 9. File Content ====================
+class TestFileContent:
+    def test_file_content_project_not_found(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = None
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/badid/files/content?path=test.txt")
+            assert response.status_code == 404
+
+    def test_file_content_empty_path(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": "/workspace"}
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=")
+            assert response.status_code == 400
+            assert "不能为空" in response.json()["detail"]
+
+    def test_file_content_path_traversal(self, mock_db):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": "/workspace"}
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=../../../etc/passwd")
+            assert response.status_code == 403
+            assert "超出" in response.json()["detail"]
+
+    def test_file_content_file_not_found(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=nonexistent.txt")
+            assert response.status_code == 404
+
+    def test_file_content_is_directory(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        (tmp_path / "subdir").mkdir()
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=subdir")
+            assert response.status_code == 404
+
+    def test_file_content_success(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        (tmp_path / "test.txt").write_text("hello world", encoding="utf-8")
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=test.txt")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["path"] == "test.txt"
+            assert data["content"] == "hello world"
+            assert data["encoding"] == "utf-8"
+            assert data["size"] == 11
+
+    def test_file_content_subdirectory(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "nested.py").write_text("print('nested')", encoding="utf-8")
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=sub/nested.py")
+            assert response.status_code == 200
+            assert response.json()["content"] == "print('nested')"
+
+    def test_file_content_binary_file(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        binary_data = bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        (tmp_path / "image.png").write_bytes(binary_data)
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=image.png")
+            assert response.status_code == 415
+            assert "非文本" in response.json()["detail"]
+
+    def test_file_content_file_too_large(self, mock_db, tmp_path):
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = {"workspace_path": str(tmp_path)}
+        large_content = "x" * (11 * 1024 * 1024)
+        large_file = tmp_path / "large.txt"
+        large_file.write_text(large_content, encoding="utf-8")
+        with patch("agent.main.get_connection", return_value=mock_conn):
+            response = client.get("/projects/p1/files/content?path=large.txt")
+            assert response.status_code == 413
+            assert "过大" in response.json()["detail"]

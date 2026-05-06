@@ -256,9 +256,9 @@ def executor_node(state: AgentState) -> AgentState:
                 state["last_execution"] = parsed_result
 
             if parsed_result.get("status") == "error":
-                # 使用浅拷贝打断循环引用，防止 json.dumps 崩溃
-                error_result = dict(parsed_result) 
-                error_result["action_log"] = action_log
+                import copy
+                error_result = copy.deepcopy(parsed_result)
+                error_result["action_log"] = copy.deepcopy(action_log)
                 state.setdefault("errors", []).append(error_result)
                 state["last_tool_result"] = error_result
                 if session_id:

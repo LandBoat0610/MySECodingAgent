@@ -12,8 +12,13 @@ import agent.backend.config as config
 class TestConfig:
     """验证 config.py 中所有常量的存在性与类型"""
 
-    def test_model_default_value(self):
-        assert config.MODEL == os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    def test_model_is_string(self):
+        assert isinstance(config.MODEL, str)
+        assert len(config.MODEL) > 0
+
+    def test_model_uses_env_or_default(self):
+        expected = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        assert config.MODEL == expected
 
     def test_memory_file_is_string(self):
         assert isinstance(config.MEMORY_FILE, str)

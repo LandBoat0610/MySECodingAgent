@@ -73,6 +73,13 @@ Agent Platform 是一个自主编码 Agent 后端服务，核心特点：
 | created_at | string | 创建时间 |
 | description | string | 项目描述 |
 
+#### DeleteProjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| status | string | 固定值 `deleted` |
+| project_id | string | 被删除的项目 ID |
+
 #### SessionCreateRequest
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -153,6 +160,15 @@ Agent Platform 是一个自主编码 Agent 后端服务，核心特点：
 | type | string | "file" 或 "directory" |
 | children | array | 子节点列表（仅 directory 有） |
 
+#### FileContentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| path | string | 文件相对路径 |
+| content | string | 文件文本内容 |
+| size | integer | 文件大小（字节） |
+| encoding | string | 编码方式，固定 `utf-8` |
+
 ---
 
 ## 4. API 接口详细说明
@@ -176,6 +192,30 @@ POST /projects
 **请求体**：`ProjectCreateRequest`  
 **响应**：`201 Created` — `ProjectResponse`  
 **错误**：`400` — workspace_path 不存在
+
+---
+
+#### 4.1.3 删除项目
+
+```
+DELETE /projects/{project_id}
+```
+
+**响应**：`200 OK` — `DeleteProjectResponse`
+
+```json
+{
+  "status": "deleted",
+  "project_id": "a1b2c3d4"
+}
+```
+
+**行为说明**：
+- 级联删除该项目下所有会话、计划、计划操作记录
+- 如果有 Agent 正在运行，会先发送取消信号终止
+- **不会**删除磁盘上的工作区目录
+
+**错误**：`404` — 项目不存在
 
 ---
 
@@ -292,6 +332,28 @@ GET /projects/{project_id}/files
 
 **响应**：`200 OK` — `FileTreeResponse[]`（递归树结构）  
 **错误**：`404` — 项目不存在
+
+---
+
+#### 4.5.2 获取文件内容
+
+```
+GET /projects/{project_id}/files/content?path={relative_path}
+```
+
+**查询参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| path | string | ✅ | 文件相对于工作区根目录的路径 |
+
+**响应**：`200 OK` — `FileContentResponse`
+
+**错误**：
+- `403` — 路径超出项目工作区范围（路径遍历攻击防护）
+- `404` — 项目不存在 或 文件不存在
+- `413` — 文件过大（超过 10MB）
+- `415` — 文件非文本格式，无法以 UTF-8 解码
 
 ---
 

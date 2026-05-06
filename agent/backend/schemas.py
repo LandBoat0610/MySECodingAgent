@@ -14,6 +14,10 @@ class ProjectResponse(BaseModel):
     created_at: str
     description: str
 
+class DeleteProjectResponse(BaseModel):
+    status: str
+    project_id: str
+
 class SessionCreateRequest(BaseModel):
     title: Optional[str] = "New Session"
 
@@ -65,7 +69,6 @@ class FileTreeResponse(BaseModel):
     path: str
     type: str  # file or directory
     children: Optional[List['FileTreeResponse']] = None
-
 
 class AgentConfigResponse(BaseModel):
     model: str
@@ -138,6 +141,12 @@ class EvalTaskResultResponse(BaseModel):
     security_json: Dict[str, Any] = Field(default_factory=dict)
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+
+class FileContentResponse(BaseModel):
+    path: str
+    content: str
+    size: int
+    encoding: str = "utf-8"
 
 
 FileTreeResponse.model_rebuild()

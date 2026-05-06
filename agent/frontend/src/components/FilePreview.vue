@@ -1,34 +1,31 @@
 <template>
   <div class="file-preview">
     <div class="preview-header">
-      <span class="preview-title">{{ selectedFile ? selectedFile.path : 'File Preview' }}</span>
-      <span v-if="selectedFile" class="preview-badge">{{ selectedFile.type }}</span>
+      <span class="preview-title">{{ store.selectedFile ? store.selectedFile.path : 'File Preview' }}</span>
+      <span v-if="store.selectedFile" class="preview-badge">{{ store.selectedFile.type }}</span>
     </div>
     <div class="preview-body">
-      <div v-if="!selectedFile" class="preview-placeholder">
+      <div v-if="!store.selectedFile" class="preview-placeholder">
         <span class="placeholder-icon">📄</span>
         <span class="placeholder-text">Select a file from the file tree to preview</span>
-        <span class="placeholder-todo">// TODO: File content preview API not yet available</span>
       </div>
-      <div v-else class="preview-placeholder">
-        <span class="placeholder-icon">📄</span>
-        <span class="placeholder-text">{{ selectedFile.path }}</span>
-        <span class="placeholder-todo">// TODO: File content preview API not yet available</span>
+      <div v-else-if="fileLoading" class="preview-placeholder">
+        <span class="placeholder-text">Loading...</span>
       </div>
+      <div v-else-if="store.error && !store.fileContent" class="preview-placeholder">
+        <span class="placeholder-icon">⚠</span>
+        <span class="placeholder-text">{{ store.error }}</span>
+      </div>
+      <pre v-else class="preview-code"><code>{{ store.fileContent }}</code></pre>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { useAgentStore } from '../stores/agent.js'
 
-const selectedFile = ref(null)
-
-function setSelectedFile(file) {
-  selectedFile.value = file
-}
-
-defineExpose({ setSelectedFile })
+const store = useAgentStore()
+const fileLoading = store.fileLoading
 </script>
 
 <style scoped>

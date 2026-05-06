@@ -22,10 +22,12 @@
         v-for="project in store.projects"
         :key="project.id"
         :class="['project-item', { active: store.selectedProjectId === project.id }]"
-        @click="store.selectProject(project.id)"
       >
-        <span class="project-icon">📁</span>
-        <span class="project-name">{{ project.name }}</span>
+        <span class="project-select" @click="store.selectProject(project.id)">
+          <span class="project-icon">📁</span>
+          <span class="project-name">{{ project.name }}</span>
+        </span>
+        <button class="btn-delete" @click.stop="handleDeleteProject(project)" title="Delete">×</button>
       </div>
       <div v-if="store.projects.length === 0 && !store.loading" class="empty-hint">
         No projects. Create one above.
@@ -104,6 +106,15 @@ async function handleCreateSession() {
     await store.doCreateSession(newSessionTitle.value.trim())
     newSessionTitle.value = ''
     showNewSession.value = false
+  } catch (e) {
+    // error handled in store
+  }
+}
+
+async function handleDeleteProject(project) {
+  if (!confirm(`确定删除项目 "${project.name}"？此操作将删除该项目下的所有会话和数据，且不可恢复。`)) return
+  try {
+    await store.doDeleteProject(project.id)
   } catch (e) {
     // error handled in store
   }
@@ -215,9 +226,8 @@ function formatDate(iso) {
 .project-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
   padding: 8px 14px;
-  cursor: pointer;
   border-left: 3px solid transparent;
   transition: background 0.15s;
 }
@@ -229,6 +239,39 @@ function formatDate(iso) {
 .project-item.active {
   background: var(--bg-surface);
   border-left-color: var(--accent);
+}
+
+.project-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  flex: 1;
+  overflow: hidden;
+}
+
+.btn-delete {
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.project-item:hover .btn-delete {
+  opacity: 1;
+}
+
+.btn-delete:hover {
+  background: var(--danger);
+  color: var(--bg-primary);
 }
 
 .project-icon {

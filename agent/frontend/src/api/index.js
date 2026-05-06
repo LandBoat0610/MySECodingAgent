@@ -38,8 +38,16 @@ export function planAction(projectId, sessionId, planId, action) {
   return api.post(`/projects/${projectId}/sessions/${sessionId}/plan/${planId}/action`, { action }).then(r => r.data)
 }
 
+export function deleteProject(projectId) {
+  return api.delete(`/projects/${projectId}`).then(r => r.data)
+}
+
 export function getFileTree(projectId) {
   return api.get(`/projects/${projectId}/files`).then(r => r.data)
+}
+
+export function getFileContent(projectId, path) {
+  return api.get(`/projects/${projectId}/files/content`, { params: { path } }).then(r => r.data)
 }
 
 export function stopSession(projectId, sessionId) {

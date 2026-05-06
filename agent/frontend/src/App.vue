@@ -2,6 +2,35 @@
   <router-view />
 </template>
 
+<script setup>
+import { onMounted, ref } from 'vue'
+import { useAgentStore } from './stores/agent.js'
+import ProjectPanel from './components/ProjectPanel.vue'
+import FileTreePanel from './components/FileTreePanel.vue'
+import FilePreview from './components/FilePreview.vue'
+import ChatPanel from './components/ChatPanel.vue'
+
+const store = useAgentStore()
+const filePreviewRef = ref(null)
+
+function handleSelectFile(node) {
+  if (node.type === 'file') {
+    store.fetchFileContent(node.path)
+  }
+}
+
+onMounted(async () => {
+  await store.fetchProjects()
+  if (store.selectedProjectId) {
+    await store.fetchSessions()
+    await store.fetchFileTree()
+    if (store.selectedSessionId) {
+      await store.restoreSessionState()
+    }
+  }
+})
+</script>
+
 <style>
 * {
   margin: 0;

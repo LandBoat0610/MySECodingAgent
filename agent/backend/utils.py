@@ -157,14 +157,19 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
     except Exception as e:
         print(f"Error updating session state: {e}")
 
+import threading
+
 _LOG_CALLBACKS = []
+_LOG_CALLBACKS_LOCK = threading.Lock()
 
 def register_log_callback(callback):
-    _LOG_CALLBACKS.append(callback)
+    with _LOG_CALLBACKS_LOCK:
+        _LOG_CALLBACKS.append(callback)
 
 def unregister_log_callback(callback):
-    if callback in _LOG_CALLBACKS:
-        _LOG_CALLBACKS.remove(callback)
+    with _LOG_CALLBACKS_LOCK:
+        if callback in _LOG_CALLBACKS:
+            _LOG_CALLBACKS.remove(callback)
 
 def _state_outline_for_trace(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not state or not isinstance(state, dict):
@@ -223,11 +228,15 @@ def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optio
         update_session_state(session_id, state)
         
     # 调用所有注册的回调（用于 WebSocket 实时推送）
-    for cb in _LOG_CALLBACKS:
+    with _LOG_CALLBACKS_LOCK:
+        callbacks_snapshot = list(_LOG_CALLBACKS)
+    for cb in callbacks_snapshot:
         try:
             cb(item)
         except Exception:
-            pass
+            with _LOG_CALLBACKS_LOCK:
+                if cb in _LOG_CALLBACKS:
+                    _LOG_CALLBACKS.remove(cb)
 
 def save_trace(trace: List[Dict[str, Any]]) -> None:
     with open(TRACE_JSON, "w", encoding="utf-8") as f:
@@ -320,9 +329,38 @@ def sync_workspace_file_back(state: AgentState) -> None:
             rel_path = os.path.relpath(workspace_file, workspace_dir)
             dest_file = os.path.join(project_root, rel_path)
 
-            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-            shutil.copy2(workspace_file, dest_file)
+            dest_dir = os.path.dirname(dest_file)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
+
+            _safe_copy_file(workspace_file, dest_file)
 
             log_state(trace, "sync_back_success", f"Synced back: {rel_path} -> {dest_file}", session_id=session_id, state=state)
+        except PermissionError as e:
+            log_state(trace, "sync_back_warning", f"File locked, skip sync {file_path}: {e}", session_id=session_id, state=state)
         except Exception as e:
             log_state(trace, "sync_back_error", f"Failed to sync {file_path} back: {e}", session_id=session_id, state=state)
+
+
+def _safe_copy_file(src: str, dst: str, max_retries: int = 3) -> None:
+    """安全复制文件，处理 Windows 文件锁定问题"""
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            shutil.copy2(src, dst)
+            return
+        except PermissionError as e:
+            if attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            
+            with open(src, 'rb') as f:
+                content = f.read()
+            with open(dst + '.tmp', 'wb') as f:
+                f.write(content)
+            try:
+                os.replace(dst + '.tmp', dst)
+            except PermissionError:
+                os.remove(dst + '.tmp')
+                raise

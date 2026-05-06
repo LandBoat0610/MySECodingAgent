@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import {
   getProjects,
   createProject,
+  deleteProject,
   getSessions,
   createSession,
   getSessionState,
@@ -10,6 +11,7 @@ import {
   getPlans,
   planAction,
   getFileTree,
+  getFileContent,
   stopSession,
   createWebSocket
 } from '../api/index.js'
@@ -34,6 +36,9 @@ export const useAgentStore = defineStore('agent', () => {
   const wsReconnectAttempts = ref(0)
   const WS_MAX_RECONNECT = 5
   const wsIntentionalClose = ref(false)
+  const selectedFile = ref(null)
+  const fileContent = ref('')
+  const fileLoading = ref(false)
 
   /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
   const agentRunStartedAt = ref(null)
@@ -120,6 +125,8 @@ export const useAgentStore = defineStore('agent', () => {
     finalAnswer.value = ''
     sessionStatus.value = 'idle'
     stateSnapshot.value = null
+    selectedFile.value = null
+    fileContent.value = ''
     agentRunStartedAt.value = null
     resetLivePerfForNewRun()
     fetchSessions()
@@ -401,6 +408,55 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  async function doDeleteProject(projectId) {
+    clearError()
+    try {
+      await deleteProject(projectId)
+      if (selectedProjectId.value === projectId) {
+        disconnectWebSocket()
+        selectedProjectId.value = null
+        persistProjectId(null)
+        selectedSessionId.value = null
+        persistSessionId(null)
+        sessions.value = []
+        fileTree.value = []
+        plans.value = []
+        traceLogs.value = []
+        chatMessages.value = []
+        finalAnswer.value = ''
+        sessionStatus.value = 'idle'
+        stateSnapshot.value = null
+        selectedFile.value = null
+        fileContent.value = ''
+      }
+      projects.value = projects.value.filter(p => p.id !== projectId)
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function fetchFileContent(filePath) {
+    if (!selectedProjectId.value) return
+    fileLoading.value = true
+    clearError()
+    try {
+      const resp = await getFileContent(selectedProjectId.value, filePath)
+      selectedFile.value = { path: filePath, type: 'file' }
+      fileContent.value = resp.content
+    } catch (e) {
+      selectedFile.value = { path: filePath, type: 'file' }
+      fileContent.value = ''
+      if (e.response?.data?.detail) {
+        setError(e.response.data.detail)
+      } else {
+        setError(e)
+      }
+    } finally {
+      fileLoading.value = false
+    }
+  }
+
   function addAssistantMessage(content) {
     chatMessages.value.push({ role: 'assistant', content })
   }
@@ -440,6 +496,11 @@ export const useAgentStore = defineStore('agent', () => {
     doSendChat,
     doPlanAction,
     doStopSession,
+    doDeleteProject,
+    selectedFile,
+    fileContent,
+    fileLoading,
+    fetchFileContent,
     addAssistantMessage,
     clearError
   }
