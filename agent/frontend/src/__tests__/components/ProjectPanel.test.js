@@ -75,7 +75,7 @@ describe('ProjectPanel.vue', () => {
             })
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ProjectPanel)
-            await wrapper.find('.project-item').trigger('click')
+            await wrapper.find('.project-select').trigger('click')
             expect(mockStore.selectProject).toHaveBeenCalledWith('p1')
         })
     })

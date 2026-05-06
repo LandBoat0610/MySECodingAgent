@@ -1,19 +1,20 @@
 /**
  * components/LiveEvalHud.test.js
- * 测试实时评测 HUD 面板组件
+ * 测试实时评测 HUD 面板组件（mock store 用 reactive 确保模板响应式）
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
+import { reactive } from 'vue'
 import LiveEvalHud from '../../components/LiveEvalHud.vue'
 import { useAgentStore } from '../../stores/agent.js'
 
-vi.mock('../../stores/agent.js', async (importOriginal) => {
-    return { useAgentStore: vi.fn() }
-})
+vi.mock('../../stores/agent.js', () => ({
+    useAgentStore: vi.fn()
+}))
 
 function createMockStore(overrides = {}) {
-    return {
+    return reactive({
         agentRunning: false,
         agentRunStartedAt: null,
         livePerf: {
@@ -24,13 +25,12 @@ function createMockStore(overrides = {}) {
         },
         traceLogs: [],
         ...overrides
-    }
+    })
 }
 
 describe('LiveEvalHud.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks()
-        vi.useFakeTimers()
         const pinia = createPinia()
         setActivePinia(pinia)
     })
@@ -45,10 +45,12 @@ describe('LiveEvalHud.vue', () => {
         expect(wrapper.find('.panel-title').text()).toBe('实时评测')
     })
 
-    it('should show elapsed time as dash when not started', () => {
+    it('should show dash for elapsed / token when idle', () => {
         useAgentStore.mockReturnValue(createMockStore())
         const wrapper = mount(LiveEvalHud)
-        expect(wrapper.text()).toContain('—')
+        const text = wrapper.text()
+        // 未启动时 Token 显示 —
+        expect(text).toContain('—')
     })
 
     it('should display token count', () => {
@@ -96,7 +98,6 @@ describe('LiveEvalHud.vue', () => {
         const wrapper = mount(LiveEvalHud)
         const btn = wrapper.find('.panel-toggle')
 
-        // Initially not collapsed (panel-body visible)
         expect(wrapper.find('.panel-body').exists()).toBe(true)
 
         await btn.trigger('click')
@@ -108,29 +109,48 @@ describe('LiveEvalHud.vue', () => {
         expect(wrapper.find('.panel-chevron').text()).toBe('▾')
     })
 
-    it('should show elapsed time when agent is running', () => {
+    it('should show elapsed time in seconds when agent is running', () => {
+        vi.useFakeTimers()
         const now = Date.now()
-        useAgentStore.mockReturnValue(createMockStore({
+        // reactive store — watch immediate 会读到 running=true
+        const store = createMockStore({
             agentRunning: true,
-            agentRunStartedAt: now - 5000  // started 5s ago
-        }))
+            agentRunStartedAt: now - 5000
+        })
+        useAgentStore.mockReturnValue(store)
         const wrapper = mount(LiveEvalHud)
-        // Should show seconds-based elapsed
-        expect(wrapper.text()).toMatch(/\d+\.\d+\s*s/)
+
+        // 由于 agentRunning=true，watch immediate 启动 timer
+        // 推进 250ms 让 tick 触发一次
+        vi.advanceTimersByTime(300)
+        // tick 后 elapsedLabel 会计算差值 = 5000 + 300 ≈ 5300 ms → 5.3 s
+        const text = wrapper.text()
+        expect(text).toMatch(/\d+\.\d+\s*s/)
+
+        vi.useRealTimers()
     })
 
     it('should show ms elapsed when under 1s', () => {
+        vi.useFakeTimers()
         const now = Date.now()
-        useAgentStore.mockReturnValue(createMockStore({
+        const store = createMockStore({
             agentRunning: true,
-            agentRunStartedAt: now - 500  // started 500ms ago
-        }))
+            agentRunStartedAt: now - 500
+        })
+        useAgentStore.mockReturnValue(store)
         const wrapper = mount(LiveEvalHud)
-        expect(wrapper.text()).toMatch(/\d+\s*ms/)
+
+        vi.advanceTimersByTime(100)
+        // 500 + 100 = 600 ms
+        const text = wrapper.text()
+        expect(text).toMatch(/\d+\s*ms/)
+
+        vi.useRealTimers()
     })
 
     it('should expand when agent starts running', async () => {
-        const store = createMockStore({ agentRunning: false })
+        vi.useFakeTimers()
+        const store = createMockStore({ agentRunning: false, agentRunStartedAt: null })
         useAgentStore.mockReturnValue(store)
         const wrapper = mount(LiveEvalHud)
 
@@ -138,11 +158,14 @@ describe('LiveEvalHud.vue', () => {
         await wrapper.find('.panel-toggle').trigger('click')
         expect(wrapper.find('.panel-body').exists()).toBe(false)
 
-        // Simulate agent start
+        // Simulate agent start via reactive store
         store.agentRunning = true
         store.agentRunStartedAt = Date.now()
         await wrapper.vm.$nextTick()
 
+        // watch 应在 agentRunning 变为 true 时设 collapsed.value = false
         expect(wrapper.find('.panel-body').exists()).toBe(true)
+
+        vi.useRealTimers()
     })
 })
