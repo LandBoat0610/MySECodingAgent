@@ -4,6 +4,11 @@ stages:
   - test
   - report
 
+# 全局默认配置：强制指定使用 Linux Runner
+default:
+  tags:
+    - linux
+
 cache:
   key: "$CI_COMMIT_REF_SLUG"
   paths:
@@ -34,7 +39,7 @@ bandit_scan:
   allow_failure: true
   needs: []
 
-# 3. 单元测试（公共基类）
+# 3. 单元测试基类 (修正为 Linux 语法)
 .test_base:
   image: python:3.11
   before_script:
@@ -46,7 +51,7 @@ pytest_backend:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.backend"
+    - export COVERAGE_FILE=.coverage.backend  # 修正：Linux 环境变量写法
     - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.backend.xml
@@ -63,7 +68,7 @@ pytest_tools:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.tools"
+    - export COVERAGE_FILE=.coverage.tools # 修正写法
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.tools.xml
@@ -80,7 +85,7 @@ pytest_llm:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.llm"
+    - export COVERAGE_FILE=.coverage.llm # 修正写法
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.llm.xml
@@ -97,7 +102,7 @@ pytest_graph_and_main:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.graph_main"
+    - export COVERAGE_FILE=.coverage.graph_main # 修正写法
     - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.graph_main.xml
