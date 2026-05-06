@@ -1,46 +1,6 @@
 <template>
-  <div class="app-container">
-    <aside class="left-sidebar">
-      <ProjectPanel />
-      <FileTreePanel @select-file="handleSelectFile" />
-    </aside>
-    <main class="center-preview">
-      <FilePreview ref="filePreviewRef" />
-    </main>
-    <aside class="right-panel">
-      <ChatPanel />
-    </aside>
-  </div>
+  <router-view />
 </template>
-
-<script setup>
-import { onMounted, ref } from 'vue'
-import { useAgentStore } from './stores/agent.js'
-import ProjectPanel from './components/ProjectPanel.vue'
-import FileTreePanel from './components/FileTreePanel.vue'
-import FilePreview from './components/FilePreview.vue'
-import ChatPanel from './components/ChatPanel.vue'
-
-const store = useAgentStore()
-const filePreviewRef = ref(null)
-
-function handleSelectFile(node) {
-  if (filePreviewRef.value) {
-    filePreviewRef.value.setSelectedFile(node)
-  }
-}
-
-onMounted(async () => {
-  await store.fetchProjects()
-  if (store.selectedProjectId) {
-    await store.fetchSessions()
-    await store.fetchFileTree()
-    if (store.selectedSessionId) {
-      await store.restoreSessionState()
-    }
-  }
-})
-</script>
 
 <style>
 * {

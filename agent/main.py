@@ -8,7 +8,6 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -22,8 +21,14 @@ from agent.backend.schemas import (
     PlanActionRequest,
     PlanActionResponse,
     FileTreeResponse,
+    AgentConfigResponse,
+    AgentConfigUpdateRequest,
 )
 from agent.backend.utils import ensure_workspace
+from agent.backend.platform_settings import get_agent_config, set_agent_config
+from agent.backend.eval_router import router as eval_router
+
+load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app):
@@ -31,8 +36,28 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
-load_dotenv()
-app = FastAPI(title="Agent Platform", version="0.1.0")
+app.include_router(eval_router)
+
+# ------------------ 平台 Agent 配置（IDE 与评测中心共用）------------------
+@app.get("/settings/agent-config", response_model=AgentConfigResponse)
+def read_agent_config():
+    cfg = get_agent_config()
+    return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+
+
+@app.put("/settings/agent-config", response_model=AgentConfigResponse)
+def update_agent_config(req: AgentConfigUpdateRequest):
+    payload = {}
+    if req.model is not None:
+        payload["model"] = req.model
+    if req.version_label is not None:
+        payload["version_label"] = req.version_label
+    if not payload:
+        cfg = get_agent_config()
+        return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+    cfg = set_agent_config(payload)
+    return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+
 
 WORKSPACES_ROOT = os.path.abspath("workspaces")
 os.makedirs(WORKSPACES_ROOT, exist_ok=True)
@@ -121,6 +146,11 @@ def create_session(project_id: str, req: SessionCreateRequest):
             "should_sync_back": False,
             "project_root": proj["workspace_path"],
             "trace": [],
+            "runtime_metrics": {
+                "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                "llm_calls": 0,
+                "tool_calls": [],
+            },
         }
 
         conn.execute(

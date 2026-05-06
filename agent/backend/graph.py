@@ -12,8 +12,9 @@ except Exception:
     END = "__end__"
 
 from agent.backend.state import AgentState
-from agent.backend.config import MODEL, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
+from agent.backend.config import get_effective_model, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, resolve_workspace_path, tool_result
+from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context, llm_json
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
@@ -50,9 +51,12 @@ def wait_for_plan_approval(session_id: str) -> str:
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
-    
-    steps = create_plan(state["task"], state.get("memory", ""), trace)
-    targets = infer_coding_targets(state["task"], state["workspace_dir"], trace)
+
+    if _check_cancel(state):
+        return state
+
+    steps = create_plan(state["task"], state.get("memory", ""), trace, state)
+    targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
     
     state["task_list"] = steps
     state["current_task_index"] = 0
@@ -92,8 +96,8 @@ def planner_node(state: AgentState) -> AgentState:
             state["status"] = "running"
             update_session_state(session_id, state, status="running")
             log_state(trace, "planner", "用户要求再优化，重新生成计划...", session_id=session_id, state=state)
-            steps = create_plan(state["task"], state.get("memory", ""), trace)
-            targets = infer_coding_targets(state["task"], state["workspace_dir"], trace)
+            steps = create_plan(state["task"], state.get("memory", ""), trace, state)
+            targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
             state["task_list"] = steps
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
@@ -178,7 +182,8 @@ def executor_node(state: AgentState) -> AgentState:
             return state
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         try:
-            response = client.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
+            record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
             state.setdefault("errors", []).append(state["last_tool_result"])
@@ -222,17 +227,25 @@ def executor_node(state: AgentState) -> AgentState:
 
             if "_argument_error" in function_args:
                 result_text = tool_result("error", function_args["_argument_error"])
+                parsed_result = parse_json_object(result_text)
+                record_tool_call(state, function_name, False, 0.0)
             else:
                 func = available_functions.get(function_name)
                 if func is None:
                     result_text = tool_result("error", f"Unknown tool: {function_name}")
+                    parsed_result = parse_json_object(result_text)
+                    record_tool_call(state, function_name, False, 0.0)
                 else:
+                    t0 = time.monotonic()
                     try:
                         result_text = func(**function_args)
                     except Exception as e:
                         result_text = tool_result("error", f"Tool exception: {e}\n{traceback.format_exc()}")
+                    elapsed_ms = (time.monotonic() - t0) * 1000.0
+                    parsed_result = parse_json_object(result_text)
+                    ok = parsed_result.get("status") != "error"
+                    record_tool_call(state, function_name, ok, elapsed_ms)
 
-            parsed_result = parse_json_object(result_text)
             action_log.append({"tool": function_name, "args": function_args, "result": parsed_result})
             state.setdefault("used_tools", []).append(function_name)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
@@ -267,6 +280,8 @@ def executor_node(state: AgentState) -> AgentState:
 
 
 def check_result_node(state: AgentState) -> AgentState:
+    if _check_cancel(state):
+        return state
     trace = state["trace"]
     session_id = state.get("session_id")
     result = state.get("last_tool_result", {}) or {}
@@ -326,6 +341,8 @@ def check_result_node(state: AgentState) -> AgentState:
 
 
 def modify_code_node(state: AgentState) -> AgentState:
+    if _check_cancel(state):
+        return state
     trace = state["trace"]
     session_id = state.get("session_id")
     state["reflections"] = state.get("reflections", 0) + 1
@@ -360,6 +377,7 @@ def modify_code_node(state: AgentState) -> AgentState:
                 f"Current code:\n{code_context}\n\n"
                 f"Latest error:\n{json.dumps(last_error, ensure_ascii=False, indent=2)}"
             ),
+            state,
         )
         updated_code = data.get("updated_code", "")
         diagnosis = data.get("diagnosis", "")
@@ -404,7 +422,8 @@ def finalize_node(state: AgentState) -> AgentState:
     )
     state["final_answer"] = final_summary
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
-    save_memory(state["task"], final_summary)
+    if not state.get("eval_mode"):
+        save_memory(state["task"], final_summary)
     
     if session_id:
         from agent.backend.utils import update_session_state

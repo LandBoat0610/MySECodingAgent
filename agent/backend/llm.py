@@ -1,9 +1,10 @@
 # 对接 OpenAI 的相关接口，包含代码文件的推演逻辑
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from agent.backend.config import MODEL
+from agent.backend.config import get_effective_model
+from agent.backend.runtime_metrics import record_llm_usage
 from agent.backend.utils import parse_json_object, load_prompts, log_state, resolve_workspace_path, safe_trim
 
 client = OpenAI(
@@ -11,15 +12,16 @@ client = OpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL")
 )
 
-def llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+def llm_json(system_prompt: str, user_prompt: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     response = client.chat.completions.create(
-        model=MODEL,
+        model=get_effective_model(),
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     )
+    record_llm_usage(state, response)
     return parse_json_object(response.choices[0].message.content or "{}")
 
 
@@ -48,12 +50,18 @@ Memory:
 """.strip()
 
 
-def create_plan(task: str, memory: str, trace: List[Dict[str, Any]]) -> List[str]:
+def create_plan(
+    task: str,
+    memory: str,
+    trace: List[Dict[str, Any]],
+    state: Optional[Dict[str, Any]] = None,
+) -> List[str]:
     log_state(trace, "plan", f"Creating plan for task: {task}")
     try:
         data = llm_json(
             "You are a planner for an autonomous agent. Break the task into 3-6 concrete executable steps. Return JSON object with key 'steps'.",
             f"Task:\n{task}\n\nMemory:\n{memory}",
+            state,
         )
         steps = data.get("steps", [])
         if not isinstance(steps, list) or not steps:
@@ -66,7 +74,12 @@ def create_plan(task: str, memory: str, trace: List[Dict[str, Any]]) -> List[str
         return [task]
 
 
-def infer_coding_targets(task: str, workspace_dir: str, trace: List[Dict[str, Any]]) -> Dict[str, str]:
+def infer_coding_targets(
+    task: str,
+    workspace_dir: str,
+    trace: List[Dict[str, Any]],
+    state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
     log_state(trace, "infer_targets", "Using LLM to infer target file and run command...")
     
     # 从 YAML 配置文件中加载提示词
@@ -90,7 +103,7 @@ def infer_coding_targets(task: str, workspace_dir: str, trace: List[Dict[str, An
     
     # 2. 调用大模型进行智能推断
     try:
-        data = llm_json(system_prompt, user_prompt)
+        data = llm_json(system_prompt, user_prompt, state)
         target_file = data.get("target_file", "main.py")
         run_command = data.get("run_command", f"python {target_file}")
     except Exception as e:

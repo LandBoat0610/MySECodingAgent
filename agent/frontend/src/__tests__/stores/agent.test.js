@@ -118,6 +118,8 @@ describe('agent store', () => {
             expect(store.chatMessages).toEqual([])
             expect(store.finalAnswer).toBe('')
             expect(store.agentRunning).toBe(false)
+            expect(store.agentRunStartedAt).toBeNull()
+            expect(store.livePerf.tokensTotal).toBe(0)
             expect(store.wsConnection).toBeNull()
             expect(store.loading).toBe(false)
             expect(store.error).toBeNull()
@@ -415,6 +417,24 @@ describe('agent store', () => {
             store.connectWebSocket()
             expect(closeSpy).toHaveBeenCalled()
             expect(store.wsConnection).not.toBe(firstWs)
+        })
+
+        it('should reset trace and record run start time on ws phase start', () => {
+            const store = createStore()
+            store.selectedProjectId = 'p1'
+            store.selectedSessionId = 's1'
+            store.traceLogs.push({ phase: 'old', content: 'x' })
+            store.connectWebSocket()
+
+            store.wsConnection._mockMessage({
+                phase: 'start',
+                message: 'Agent 正在执行...'
+            })
+
+            expect(store.traceLogs).toEqual([])
+            expect(store.agentRunStartedAt).toBeTruthy()
+            expect(typeof store.agentRunStartedAt).toBe('number')
+            expect(store.livePerf.tokensTotal).toBe(0)
         })
 
         it('should handle ws.onmessage trace events', () => {

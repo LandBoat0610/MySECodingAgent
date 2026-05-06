@@ -44,3 +44,4 @@ zizhiagent_workspace_*/
 agent_trace.json
 agent_trace.mmd
 agent_memory.md
+agent/eval_storage/

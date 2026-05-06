@@ -29,3 +29,5 @@ class AgentState(TypedDict, total=False):
     #
     project_root: str
     modified_files: List[str]
+    eval_mode: bool
+    runtime_metrics: Dict[str, Any]

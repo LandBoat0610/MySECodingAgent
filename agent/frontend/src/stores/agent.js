@@ -35,6 +35,16 @@ export const useAgentStore = defineStore('agent', () => {
   const WS_MAX_RECONNECT = 5
   const wsIntentionalClose = ref(false)
 
+  /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
+  const agentRunStartedAt = ref(null)
+  /** 由轨迹 meta / 会话快照合并的运行时指标摘要 */
+  const livePerf = ref({
+    tokensTotal: 0,
+    toolEventsCount: 0,
+    toolSuccessRate: null,
+    toolAvgLatencyMs: null
+  })
+
   const selectedProject = computed(() => projects.value.find(p => p.id === selectedProjectId.value) || null)
   const selectedSession = computed(() => sessions.value.find(s => s.id === selectedSessionId.value) || null)
   const pendingPlans = computed(() => plans.value.filter(p => p.status === 'pending'))
@@ -72,6 +82,30 @@ export const useAgentStore = defineStore('agent', () => {
     return project
   }
 
+  function syncLivePerfFromSnapshot() {
+    const rm = stateSnapshot.value?.runtime_metrics
+    if (!rm || typeof rm !== 'object') return
+    const ev = rm.tool_calls || []
+    const ok = ev.filter(e => e && e.ok).length
+    livePerf.value = {
+      tokensTotal: rm.tokens?.total ?? livePerf.value.tokensTotal,
+      toolEventsCount: ev.length,
+      toolSuccessRate: ev.length ? ok / ev.length : null,
+      toolAvgLatencyMs: ev.length
+        ? Math.round(ev.reduce((s, x) => s + (Number(x.latency_ms) || 0), 0) / ev.length)
+        : null
+    }
+  }
+
+  function resetLivePerfForNewRun() {
+    livePerf.value = {
+      tokensTotal: 0,
+      toolEventsCount: 0,
+      toolSuccessRate: null,
+      toolAvgLatencyMs: null
+    }
+  }
+
   function selectProject(projectId) {
     disconnectWebSocket()
     selectedProjectId.value = projectId
@@ -86,6 +120,8 @@ export const useAgentStore = defineStore('agent', () => {
     finalAnswer.value = ''
     sessionStatus.value = 'idle'
     stateSnapshot.value = null
+    agentRunStartedAt.value = null
+    resetLivePerfForNewRun()
     fetchSessions()
     fetchFileTree()
   }
@@ -122,6 +158,8 @@ export const useAgentStore = defineStore('agent', () => {
     finalAnswer.value = ''
     stateSnapshot.value = null
     agentRunning.value = false
+    agentRunStartedAt.value = null
+    resetLivePerfForNewRun()
     await restoreSessionState()
   }
 
@@ -151,6 +189,7 @@ export const useAgentStore = defineStore('agent', () => {
       if (stateResp.snapshot?.trace) {
         traceLogs.value = stateResp.snapshot.trace || []
       }
+      syncLivePerfFromSnapshot()
     } catch (e) {
       setError(e)
     }
@@ -203,11 +242,30 @@ export const useAgentStore = defineStore('agent', () => {
           }
           setError(data.error)
           agentRunning.value = false
+          agentRunStartedAt.value = null
           return
         }
 
         if (data.type === 'trace' && data.data) {
           traceLogs.value.push(data.data)
+          const meta = data.data.meta || {}
+          if (
+            meta.tokens_total != null ||
+            meta.tool_events_count != null ||
+            meta.tool_success_rate != null ||
+            meta.tool_avg_latency_ms != null
+          ) {
+            livePerf.value = {
+              tokensTotal: meta.tokens_total ?? livePerf.value.tokensTotal,
+              toolEventsCount: meta.tool_events_count ?? livePerf.value.toolEventsCount,
+              toolSuccessRate:
+                meta.tool_success_rate != null ? meta.tool_success_rate : livePerf.value.toolSuccessRate,
+              toolAvgLatencyMs:
+                meta.tool_avg_latency_ms != null
+                  ? meta.tool_avg_latency_ms
+                  : livePerf.value.toolAvgLatencyMs
+            }
+          }
           if (data.data.session_status) {
             sessionStatus.value = data.data.session_status
             if (data.data.session_status === 'awaiting_approval') {
@@ -219,11 +277,14 @@ export const useAgentStore = defineStore('agent', () => {
         if (data.phase === 'start') {
           agentRunning.value = true
           traceLogs.value = []
+          agentRunStartedAt.value = Date.now()
+          resetLivePerfForNewRun()
         }
 
         if (data.phase === 'done') {
           wsIntentionalClose.value = true
           agentRunning.value = false
+          agentRunStartedAt.value = null
           finalAnswer.value = data.final_answer || ''
           sessionStatus.value = data.status || 'completed'
           fetchPlans()
@@ -233,8 +294,10 @@ export const useAgentStore = defineStore('agent', () => {
         if (data.phase === 'cancelled') {
           wsIntentionalClose.value = true
           agentRunning.value = false
+          agentRunStartedAt.value = null
           sessionStatus.value = 'stopped'
           fetchPlans()
+          restoreSessionState()
         }
       } catch (e) {
         console.error('WebSocket message parse error:', e)
@@ -247,6 +310,7 @@ export const useAgentStore = defineStore('agent', () => {
       if (wsIntentionalClose.value) {
         wsIntentionalClose.value = false
         agentRunning.value = false
+        agentRunStartedAt.value = null
         return
       }
       const activeStates = ['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step']
@@ -258,16 +322,19 @@ export const useAgentStore = defineStore('agent', () => {
           }, 2000 * wsReconnectAttempts.value)
         } else {
           agentRunning.value = false
+          agentRunStartedAt.value = null
           setError('WebSocket 连接断开，已达到最大重连次数，请手动刷新页面')
         }
       } else {
         agentRunning.value = false
+        agentRunStartedAt.value = null
       }
     }
 
     ws.onerror = (err) => {
       console.error('WebSocket error:', err)
       agentRunning.value = false
+      agentRunStartedAt.value = null
     }
   }
 
@@ -278,6 +345,7 @@ export const useAgentStore = defineStore('agent', () => {
       wsConnection.value = null
     }
     agentRunning.value = false
+    agentRunStartedAt.value = null
   }
 
   async function doSendChat(message) {
@@ -353,6 +421,8 @@ export const useAgentStore = defineStore('agent', () => {
     wsConnection,
     loading,
     error,
+    agentRunStartedAt,
+    livePerf,
     selectedProject,
     selectedSession,
     pendingPlans,

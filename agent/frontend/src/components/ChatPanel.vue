@@ -4,6 +4,19 @@
       <div class="header-left">
         <span class="panel-title">Agent</span>
         <span :class="['status-badge', store.sessionStatus]">{{ store.sessionStatus }}</span>
+        <span v-if="cfg.model" class="model-chip" :title="'后端推理模型（与评测中心共享）'">{{ cfg.model }}</span>
+        <span
+          v-if="runtimeSummary"
+          class="metrics-chip"
+          :title="'本会话累计 Token（OpenAI usage）；工具调用次数与成功率'"
+        >
+          tokens {{ runtimeSummary.tokens }}
+          <template v-if="runtimeSummary.toolCalls > 0">
+            · 工具 {{ runtimeSummary.toolCalls }}
+            <template v-if="runtimeSummary.toolOkRate != null"> · 成功率 {{ runtimeSummary.toolOkRate }}%</template>
+          </template>
+          <template v-else-if="runtimeSummary.llmCalls"> · LLM 调用 {{ runtimeSummary.llmCalls }}</template>
+        </span>
       </div>
       <div class="header-actions">
         <button
@@ -84,17 +97,35 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
+import { useAgentConfigStore } from '../stores/agentConfig.js'
 import PlanDialog from './PlanDialog.vue'
 
 const store = useAgentStore()
+const cfg = useAgentConfigStore()
+
+onMounted(() => {
+  if (!cfg.model) cfg.load()
+})
 const inputMessage = ref('')
 const messagesContainer = ref(null)
 const showTrace = ref(true)
 
 const showPlanDialog = computed(() => {
   return store.sessionStatus === 'awaiting_approval' && store.pendingPlans.length > 0
+})
+
+const runtimeSummary = computed(() => {
+  const rm = store.stateSnapshot?.runtime_metrics
+  if (!rm) return null
+  const t = rm.tokens?.total ?? 0
+  const tc = rm.tool_calls?.length ?? 0
+  const ok = (rm.tool_calls || []).filter(e => e.ok).length
+  const rate = tc ? Math.round((ok / tc) * 100) : null
+  const llm = rm.llm_calls ?? 0
+  if (t === 0 && tc === 0 && llm === 0) return null
+  return { tokens: t, toolCalls: tc, toolOkRate: rate, llmCalls: llm }
 })
 
 watch(() => store.chatMessages.length, async () => {
@@ -152,6 +183,34 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.model-chip {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--accent);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metrics-chip {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-title {

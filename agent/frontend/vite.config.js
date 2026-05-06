@@ -18,6 +18,15 @@ export default defineConfig({
       '/openapi.json': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true
+      },
+      '/settings': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true
+      },
+      // 仅转发后端 /eval/* API；浏览器页面使用 /workspace/*，避免与 API 同路径
+      '/eval': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true
       }
     }
   }

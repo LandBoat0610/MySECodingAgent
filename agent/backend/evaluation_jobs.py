@@ -1,0 +1,512 @@
+"""评测任务 CRUD、数据集持久化与后台执行（复用 LangGraph Agent）。"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import threading
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from agent.backend.database import get_connection
+from agent.backend.eval_dataset import (
+    canonical_dataset_document,
+    load_dataset_items_from_path,
+    normalize_dataset_payload,
+    parse_upload_json_bytes,
+)
+from agent.backend.eval_scoring import build_eval_prompt, decide_passed
+from agent.backend.eval_storage import DATASETS_DIR, WORKSPACES_DIR, ensure_eval_storage_dirs
+from agent.backend.platform_settings import get_agent_config
+from agent.backend.utils import sync_workspace_file_back
+from agent.backend.config import eval_model_context
+
+_eval_threads: Dict[str, threading.Thread] = {}
+_eval_cancel: Dict[str, threading.Event] = {}
+_registry_lock = threading.Lock()
+
+
+def _now() -> str:
+    return datetime.now().isoformat()
+
+
+def create_dataset_from_bytes(filename: str | None, raw: bytes, display_name: Optional[str] = None) -> Dict[str, Any]:
+    ensure_eval_storage_dirs()
+    name_from_payload, items = parse_upload_json_bytes(raw)
+    ds_name = (display_name or "").strip() or name_from_payload or (filename or "dataset")
+    doc = canonical_dataset_document(ds_name, items)
+    dataset_id = uuid.uuid4().hex[:12]
+    path = os.path.join(DATASETS_DIR, f"{dataset_id}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+
+    created_at = _now()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO eval_datasets (id, name, created_at, item_count, storage_path)
+               VALUES (?, ?, ?, ?, ?)""",
+            (dataset_id, ds_name, created_at, len(items), path),
+        )
+    return {"id": dataset_id, "name": ds_name, "created_at": created_at, "item_count": len(items)}
+
+
+def create_dataset_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    ensure_eval_storage_dirs()
+    name_in, items = normalize_dataset_payload(payload)
+    ds_name = str(payload.get("name") or "").strip() or name_in
+    doc = canonical_dataset_document(ds_name, items)
+    dataset_id = uuid.uuid4().hex[:12]
+    path = os.path.join(DATASETS_DIR, f"{dataset_id}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    created_at = _now()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO eval_datasets (id, name, created_at, item_count, storage_path)
+               VALUES (?, ?, ?, ?, ?)""",
+            (dataset_id, ds_name, created_at, len(items), path),
+        )
+    return {"id": dataset_id, "name": ds_name, "created_at": created_at, "item_count": len(items)}
+
+
+def list_datasets() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM eval_datasets ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dataset_row(dataset_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM eval_datasets WHERE id = ?", (dataset_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_dataset(dataset_id: str, cascade_tasks: bool = False) -> None:
+    row = get_dataset_row(dataset_id)
+    if not row:
+        raise LookupError("数据集不存在")
+
+    with get_connection() as conn:
+        task_rows = conn.execute(
+            "SELECT id, status FROM eval_tasks WHERE dataset_id = ?", (dataset_id,)
+        ).fetchall()
+    refs = [dict(r) for r in task_rows]
+
+    if refs:
+        if not cascade_tasks:
+            raise ValueError("仍有评测任务引用该数据集，无法删除。请先删除相关评测任务，或在界面勾选「同时删除关联任务」。")
+        for tr in refs:
+            if tr.get("status") in ("running", "cancelling"):
+                raise ValueError("存在运行中的评测任务，请先点「取消」结束后再删除数据集。")
+        for tr in refs:
+            delete_eval_task(tr["id"])
+
+    with get_connection() as conn:
+        conn.execute("DELETE FROM eval_datasets WHERE id = ?", (dataset_id,))
+    path = row.get("storage_path")
+    if path and os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def create_eval_task(name: str, dataset_id: str, eval_method: str) -> Dict[str, Any]:
+    if eval_method not in ("result", "process"):
+        raise ValueError('eval_method 须为 "result" 或 "process"')
+    ds = get_dataset_row(dataset_id)
+    if not ds:
+        raise LookupError("数据集不存在")
+
+    cfg = get_agent_config()
+    task_id = uuid.uuid4().hex[:12]
+    created_at = _now()
+    total_items = int(ds["item_count"])
+
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO eval_tasks (
+                id, name, created_at, updated_at, dataset_id, eval_method,
+                agent_model_snapshot, agent_version_label_snapshot,
+                status, total_items, completed_items, passed_count, failed_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 0, 0)""",
+            (
+                task_id,
+                name.strip(),
+                created_at,
+                created_at,
+                dataset_id,
+                eval_method,
+                str(cfg.get("model") or ""),
+                str(cfg.get("version_label") or ""),
+                total_items,
+            ),
+        )
+    return get_eval_task(task_id)
+
+
+def get_eval_task(task_id: str) -> Dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM eval_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise LookupError("评测任务不存在")
+    return dict(row)
+
+
+def list_eval_tasks() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT t.*, d.name AS dataset_name
+               FROM eval_tasks t
+               JOIN eval_datasets d ON d.id = t.dataset_id
+               ORDER BY t.created_at DESC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def patch_eval_task(task_id: str, name: Optional[str] = None, eval_method: Optional[str] = None) -> Dict[str, Any]:
+    task = get_eval_task(task_id)
+    if task["status"] != "pending":
+        raise ValueError("仅「待运行」状态的任务可修改配置")
+
+    updates = []
+    params: List[Any] = []
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name.strip())
+    if eval_method is not None:
+        if eval_method not in ("result", "process"):
+            raise ValueError('eval_method 须为 "result" 或 "process"')
+        updates.append("eval_method = ?")
+        params.append(eval_method)
+
+    if not updates:
+        return task
+
+    params.append(_now())
+    params.append(task_id)
+    sql = f"UPDATE eval_tasks SET {', '.join(updates)}, updated_at = ? WHERE id = ?"
+    with get_connection() as conn:
+        conn.execute(sql, tuple(params))
+    return get_eval_task(task_id)
+
+
+def delete_eval_task(task_id: str) -> None:
+    task = get_eval_task(task_id)
+    if task["status"] in ("running", "cancelling"):
+        raise ValueError("任务运行中，请先取消")
+    with get_connection() as conn:
+        conn.execute("DELETE FROM eval_task_results WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM eval_tasks WHERE id = ?", (task_id,))
+    base = os.path.join(WORKSPACES_DIR, task_id)
+    if os.path.isdir(base):
+        try:
+            shutil.rmtree(base, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def list_task_results(task_id: str) -> List[Dict[str, Any]]:
+    _ = get_eval_task(task_id)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM eval_task_results WHERE task_id = ?
+               ORDER BY item_index ASC""",
+            (task_id,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["score_detail"] = json.loads(d.get("score_detail") or "{}")
+        except json.JSONDecodeError:
+            d["score_detail"] = {}
+        try:
+            d["trace_json"] = json.loads(d.get("trace_json") or "[]")
+        except json.JSONDecodeError:
+            d["trace_json"] = []
+        for key in ("ragas_json", "judge_json", "runtime_metrics_json", "radar_json", "security_json"):
+            try:
+                d[key] = json.loads(d.get(key) or "{}")
+            except json.JSONDecodeError:
+                d[key] = {}
+        out.append(d)
+    return out
+
+
+def aggregate_task_analytics(task_id: str) -> Dict[str, Any]:
+    from agent.backend.eval_quality import build_radar_vector, mean_radar
+    from agent.backend.runtime_metrics import summarize_runtime_metrics
+
+    rows = list_task_results(task_id)
+    radars: List[Dict[str, float]] = []
+    item_views: List[Dict[str, Any]] = []
+    for r in rows:
+        rv = r.get("radar_json") or {}
+        if isinstance(rv, dict) and rv:
+            radars.append({k: float(v) for k, v in rv.items()})
+        item_views.append(
+            {
+                "item_index": r["item_index"],
+                "passed": bool(r["passed"]) if r.get("passed") is not None else None,
+                "radar": rv,
+                "ragas": r.get("ragas_json"),
+                "judge": r.get("judge_json"),
+                "runtime_metrics": r.get("runtime_metrics_json"),
+                "security": r.get("security_json"),
+            }
+        )
+    default_axes = build_radar_vector({}, {}, summarize_runtime_metrics(None), {})
+    mean_vec = mean_radar(radars, list(default_axes.keys())) if radars else {}
+    return {
+        "task_id": task_id,
+        "radar_mean": mean_vec,
+        "radar_axes": list(default_axes.keys()),
+        "items": item_views,
+        "items_with_radar": len(radars),
+    }
+
+
+def _get_cancel_event(task_id: str) -> threading.Event:
+    with _registry_lock:
+        if task_id not in _eval_cancel:
+            _eval_cancel[task_id] = threading.Event()
+        return _eval_cancel[task_id]
+
+
+def cancel_eval_task(task_id: str) -> Dict[str, Any]:
+    task = get_eval_task(task_id)
+    if task["status"] not in ("running", "cancelling"):
+        raise ValueError("当前任务未在运行")
+    ev = _get_cancel_event(task_id)
+    ev.set()
+    if task["status"] == "running":
+        now = _now()
+        with get_connection() as conn:
+            conn.execute(
+                """UPDATE eval_tasks SET status = 'cancelling', updated_at = ?, error_message = ''
+                   WHERE id = ? AND status = 'running'""",
+                (now, task_id),
+            )
+    return get_eval_task(task_id)
+
+
+def start_eval_task(task_id: str) -> Dict[str, Any]:
+    task = get_eval_task(task_id)
+    if task["status"] not in ("pending", "completed", "failed", "cancelled"):
+        raise ValueError("任务状态不允许启动")
+
+    with _registry_lock:
+        if task_id in _eval_threads and _eval_threads[task_id].is_alive():
+            raise ValueError("任务已在运行中")
+
+    ds_row = get_dataset_row(task["dataset_id"])
+    if not ds_row:
+        raise LookupError("数据集不存在")
+
+    storage_path = ds_row["storage_path"]
+    _, items = load_dataset_items_from_path(storage_path)
+
+    cancel_ev = threading.Event()
+    with _registry_lock:
+        _eval_cancel[task_id] = cancel_ev
+
+    now = _now()
+    with get_connection() as conn:
+        conn.execute("DELETE FROM eval_task_results WHERE task_id = ?", (task_id,))
+        conn.execute(
+            """UPDATE eval_tasks SET status = 'running', updated_at = ?, error_message = '',
+               completed_items = 0, passed_count = 0, failed_count = 0 WHERE id = ?""",
+            (now, task_id),
+        )
+
+    th = threading.Thread(target=_eval_worker, args=(task_id, items, cancel_ev), daemon=True)
+    with _registry_lock:
+        _eval_threads[task_id] = th
+    th.start()
+    return get_eval_task(task_id)
+
+
+def _build_initial_state(workspace_dir: str, prompt: str, cancel_event: threading.Event) -> Dict[str, Any]:
+    return {
+        "project_id": "eval",
+        "workspace_dir": workspace_dir,
+        "project_root": workspace_dir,
+        "task": prompt,
+        "messages": [],
+        "trace": [],
+        "errors": [],
+        "reflections": 0,
+        "used_tools": [],
+        "result_history": [],
+        "modified_files": [],
+        "task_list": [],
+        "current_task_index": 0,
+        "current_task": "",
+        "code_context": "",
+        "target_file": "",
+        "run_command": "",
+        "last_tool_result": {},
+        "last_execution": {},
+        "final_answer": "",
+        "original_target_path": "",
+        "should_sync_back": False,
+        "status": "idle",
+        "memory": "",
+        "_cancel_event": cancel_event,
+        "eval_mode": True,
+        "runtime_metrics": {
+            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "llm_calls": 0,
+            "tool_calls": [],
+        },
+    }
+
+
+def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading.Event) -> None:
+    try:
+        task_row = get_eval_task(task_id)
+    except LookupError:
+        return
+
+    model_snap = (task_row.get("agent_model_snapshot") or "").strip()
+    eval_method = task_row.get("eval_method") or "result"
+    passed_n = 0
+    failed_n = 0
+
+    base_ws = os.path.join(WORKSPACES_DIR, task_id)
+    try:
+        shutil.rmtree(base_ws, ignore_errors=True)
+        os.makedirs(base_ws, exist_ok=True)
+    except OSError:
+        pass
+
+    try:
+        from agent.backend.graph import build_graph, run_manual_fallback
+
+        with eval_model_context(model_snap if model_snap else None):
+            for idx, item in enumerate(items):
+                if cancel_ev.is_set():
+                    break
+
+                rid = uuid.uuid4().hex[:10]
+                item_ws = os.path.join(base_ws, f"{idx:03d}_{rid}")
+                os.makedirs(item_ws, exist_ok=True)
+
+                prompt = build_eval_prompt(item)
+                started = _now()
+                state = _build_initial_state(item_ws, prompt, cancel_ev)
+
+                final_state: Dict[str, Any]
+                err_text = ""
+
+                try:
+                    graph = build_graph()
+                    if graph:
+                        final_state = graph.invoke(dict(state))
+                    else:
+                        final_state = run_manual_fallback(dict(state))
+                    sync_workspace_file_back(final_state)
+                except Exception as e:
+                    err_text = str(e)
+                    final_state = dict(state)
+                    final_state.setdefault("errors", []).append({"status": "error", "output": err_text})
+
+                finished = _now()
+                fa = str(final_state.get("final_answer") or "")
+                trace = final_state.get("trace") or []
+                errors = final_state.get("errors") or []
+
+                passed: Optional[bool] = None
+                score_detail: Dict[str, Any] = {}
+                if err_text and not fa:
+                    passed = False
+                    score_detail = {"runner_error": err_text}
+                else:
+                    passed, score_detail = decide_passed(eval_method, fa, item, errors, trace)
+
+                if passed:
+                    passed_n += 1
+                else:
+                    failed_n += 1
+
+                trace_serializable = trace
+                try:
+                    json.dumps(trace_serializable)
+                except Exception:
+                    trace_serializable = [{"phase": "serialize_error", "content": "trace not JSON serializable"}]
+
+                trace_to_store: Any = trace_serializable
+
+                from agent.backend.eval_quality import (
+                    build_contexts_for_ragas,
+                    build_radar_vector,
+                    compute_judge_scores,
+                    compute_ragas_scores,
+                )
+                from agent.backend.eval_security import compute_security_assessment, gather_code_blob_for_security_scan
+                from agent.backend.runtime_metrics import summarize_runtime_metrics
+
+                ctxs = build_contexts_for_ragas(final_state, item_ws)
+                ragas_scores = compute_ragas_scores(item.get("description", "") or prompt, fa, ctxs)
+                judge_scores = compute_judge_scores(item.get("description", "") or prompt, fa, ctxs)
+                security_blob = gather_code_blob_for_security_scan(final_state, item_ws)
+                security_scores = compute_security_assessment(security_blob)
+                rm_blob = final_state.get("runtime_metrics")
+                rm_summary = summarize_runtime_metrics(rm_blob if isinstance(rm_blob, dict) else None)
+                radar_vec = build_radar_vector(ragas_scores, judge_scores, rm_summary, security_scores)
+
+                with get_connection() as conn:
+                    conn.execute(
+                        """INSERT INTO eval_task_results (
+                            id, task_id, item_index, item_key, description_snapshot,
+                            status, passed, score_detail, final_answer, trace_json, run_error,
+                            ragas_json, judge_json, runtime_metrics_json, radar_json, security_json,
+                            started_at, finished_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            rid,
+                            task_id,
+                            idx,
+                            str(item.get("id", idx)),
+                            item.get("description", ""),
+                            "completed",
+                            1 if passed else 0,
+                            json.dumps(score_detail, ensure_ascii=False),
+                            fa[:50000] if fa else "",
+                            json.dumps(trace_to_store, ensure_ascii=False),
+                            err_text[:8000] if err_text else "",
+                            json.dumps(ragas_scores, ensure_ascii=False),
+                            json.dumps(judge_scores, ensure_ascii=False),
+                            json.dumps(rm_summary, ensure_ascii=False),
+                            json.dumps(radar_vec, ensure_ascii=False),
+                            json.dumps(security_scores, ensure_ascii=False),
+                            started,
+                            finished,
+                        ),
+                    )
+                    conn.execute(
+                        """UPDATE eval_tasks SET completed_items = ?, passed_count = ?, failed_count = ?, updated_at = ?
+                           WHERE id = ?""",
+                        (idx + 1, passed_n, failed_n, finished, task_id),
+                    )
+
+        final_status = "cancelled" if cancel_ev.is_set() else "completed"
+
+        with get_connection() as conn:
+            conn.execute(
+                """UPDATE eval_tasks SET status = ?, updated_at = ? WHERE id = ?""",
+                (final_status, _now(), task_id),
+            )
+
+    except Exception as e:
+        with get_connection() as conn:
+            conn.execute(
+                """UPDATE eval_tasks SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?""",
+                (str(e)[:4000], _now(), task_id),
+            )
+    finally:
+        with _registry_lock:
+            _eval_cancel.pop(task_id, None)
+            _eval_threads.pop(task_id, None)

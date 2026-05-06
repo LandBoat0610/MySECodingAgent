@@ -166,12 +166,53 @@ def unregister_log_callback(callback):
     if callback in _LOG_CALLBACKS:
         _LOG_CALLBACKS.remove(callback)
 
+def _state_outline_for_trace(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not state or not isinstance(state, dict):
+        return None
+    out: Dict[str, Any] = {}
+    for k in ("status", "current_task_index", "current_task", "target_file", "run_command", "reflections"):
+        if k not in state:
+            continue
+        v = state[k]
+        if v is None or v == "" or v == []:
+            continue
+        out[k] = v
+    mf = state.get("modified_files")
+    if isinstance(mf, list) and mf:
+        out["modified_files_tail"] = mf[-8:]
+    return out or None
+
+
+def _trace_runtime_meta(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not state or not isinstance(state.get("runtime_metrics"), dict):
+        return {}
+    rm = state["runtime_metrics"]
+    tok = (rm.get("tokens") or {}).get("total")
+    out: Dict[str, Any] = {}
+    if tok is not None:
+        out["tokens_total"] = int(tok)
+    ev = rm.get("tool_calls") or []
+    if isinstance(ev, list):
+        out["tool_events_count"] = len(ev)
+        ok_n = sum(1 for e in ev if isinstance(e, dict) and e.get("ok"))
+        out["tool_success_rate"] = round(ok_n / len(ev), 4) if ev else None
+        lat_sum = sum(float(e.get("latency_ms") or 0) for e in ev if isinstance(e, dict))
+        out["tool_avg_latency_ms"] = round(lat_sum / len(ev), 2) if ev else None
+    return out
+
+
 def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optional[dict] = None, session_id: Optional[str] = None, state: Optional[Dict[str, Any]] = None) -> None:
+    merged_meta = dict(meta or {})
+    merged_meta.update(_trace_runtime_meta(state))
     item = {
-        "time": now_str(), 
-        "phase": phase, 
-        "content": safe_trim(content, 1600), 
-        "meta": meta or {}}
+        "time": now_str(),
+        "phase": phase,
+        "content": safe_trim(content, 1600),
+        "meta": merged_meta,
+    }
+    outline = _state_outline_for_trace(state)
+    if outline:
+        item["state_outline"] = outline
     if state and isinstance(state, dict) and "status" in state:
         item["session_status"] = state["status"]
     trace.append(item)

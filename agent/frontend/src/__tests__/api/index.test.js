@@ -11,6 +11,8 @@ vi.mock('axios', () => {
         create: vi.fn(() => mockAxios),
         get: vi.fn(),
         post: vi.fn(),
+        put: vi.fn(),
+        delete: vi.fn(),
         interceptors: {
             request: { use: vi.fn() },
             response: { use: vi.fn() }
@@ -109,6 +111,50 @@ describe('API layer', () => {
             const result = await api.getFileTree('proj-1')
             expect(axios.get).toHaveBeenCalledWith('/projects/proj-1/files')
             expect(result).toEqual([{ path: '/a', type: 'file' }])
+        })
+    })
+
+    describe('getAgentConfig', () => {
+        it('should call GET /settings/agent-config', async () => {
+            axios.get.mockResolvedValue({ data: { model: 'gpt-4o-mini', version_label: '' } })
+            const result = await api.getAgentConfig()
+            expect(axios.get).toHaveBeenCalledWith('/settings/agent-config')
+            expect(result).toEqual({ model: 'gpt-4o-mini', version_label: '' })
+        })
+    })
+
+    describe('updateAgentConfig', () => {
+        it('should call PUT /settings/agent-config', async () => {
+            axios.put.mockResolvedValue({ data: { model: 'gpt-4o', version_label: 'v2' } })
+            const body = { model: 'gpt-4o', version_label: 'v2' }
+            const result = await api.updateAgentConfig(body)
+            expect(axios.put).toHaveBeenCalledWith('/settings/agent-config', body)
+            expect(result).toEqual({ model: 'gpt-4o', version_label: 'v2' })
+        })
+    })
+
+    describe('deleteEvalDataset', () => {
+        it('should call DELETE /eval/datasets/:id without cascade query', async () => {
+            axios.delete.mockResolvedValue({ data: { ok: true } })
+            const result = await api.deleteEvalDataset('ds-1')
+            expect(axios.delete).toHaveBeenCalledWith('/eval/datasets/ds-1', { params: {} })
+            expect(result).toEqual({ ok: true })
+        })
+
+        it('should pass cascade=true when opts.cascade is set', async () => {
+            axios.delete.mockResolvedValue({ data: { ok: true } })
+            await api.deleteEvalDataset('ds-2', { cascade: true })
+            expect(axios.delete).toHaveBeenCalledWith('/eval/datasets/ds-2', {
+                params: { cascade: true }
+            })
+        })
+    })
+
+    describe('listEvalTasks', () => {
+        it('should call GET /eval/tasks', async () => {
+            axios.get.mockResolvedValue({ data: [] })
+            await api.listEvalTasks()
+            expect(axios.get).toHaveBeenCalledWith('/eval/tasks')
         })
     })
 
