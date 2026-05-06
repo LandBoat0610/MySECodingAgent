@@ -57,6 +57,24 @@ def evaluate_process_oriented(
     return True, detail
 
 
+def evaluate_combined(
+    final_answer: str,
+    item: Dict[str, Any],
+    errors: List[Any],
+    trace: List[Any],
+) -> Tuple[bool, Dict[str, Any]]:
+    """联合评估：同时检查输出匹配（结果维度）和过程质量（过程维度），两者均须通过。"""
+    result_ok, result_detail = evaluate_result_oriented(final_answer, item)
+    process_ok, process_detail = evaluate_process_oriented(final_answer, item, errors, trace)
+    combined_ok = result_ok and process_ok
+    return combined_ok, {
+        "result_check": result_detail,
+        "process_check": process_detail,
+        "result_passed": result_ok,
+        "process_passed": process_ok,
+    }
+
+
 def decide_passed(
     eval_method: str,
     final_answer: str,
@@ -66,6 +84,8 @@ def decide_passed(
 ) -> Tuple[bool, Dict[str, Any]]:
     if eval_method == "process":
         return evaluate_process_oriented(final_answer, item, state_errors, trace)
+    if eval_method == "combined":
+        return evaluate_combined(final_answer, item, state_errors, trace)
     return evaluate_result_oriented(final_answer, item)
 
 

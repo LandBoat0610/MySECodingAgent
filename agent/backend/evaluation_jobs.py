@@ -113,8 +113,8 @@ def delete_dataset(dataset_id: str, cascade_tasks: bool = False) -> None:
 
 
 def create_eval_task(name: str, dataset_id: str, eval_method: str) -> Dict[str, Any]:
-    if eval_method not in ("result", "process"):
-        raise ValueError('eval_method 须为 "result" 或 "process"')
+    if eval_method not in ("result", "process", "combined"):
+        raise ValueError('eval_method 须为 "result"、"process" 或 "combined"')
     ds = get_dataset_row(dataset_id)
     if not ds:
         raise LookupError("数据集不存在")
@@ -176,8 +176,8 @@ def patch_eval_task(task_id: str, name: Optional[str] = None, eval_method: Optio
         updates.append("name = ?")
         params.append(name.strip())
     if eval_method is not None:
-        if eval_method not in ("result", "process"):
-            raise ValueError('eval_method 须为 "result" 或 "process"')
+        if eval_method not in ("result", "process", "combined"):
+            raise ValueError('eval_method 须为 "result"、"process" 或 "combined"')
         updates.append("eval_method = ?")
         params.append(eval_method)
 
@@ -242,29 +242,148 @@ def aggregate_task_analytics(task_id: str) -> Dict[str, Any]:
     rows = list_task_results(task_id)
     radars: List[Dict[str, float]] = []
     item_views: List[Dict[str, Any]] = []
+
+    # 显式指标聚合
+    tokens_total_sum = 0
+    tokens_prompt_sum = 0
+    tokens_completion_sum = 0
+    llm_calls_sum = 0
+    tool_success_rates: List[float] = []
+    tool_latencies: List[float] = []
+    response_times_ms: List[float] = []
+    security_band_counts: Dict[str, int] = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    ragas_ar_vals: List[float] = []
+    ragas_ff_vals: List[float] = []
+    judge_rq_vals: List[float] = []
+    judge_hs_vals: List[float] = []
+
     for r in rows:
         rv = r.get("radar_json") or {}
         if isinstance(rv, dict) and rv:
             radars.append({k: float(v) for k, v in rv.items()})
+
+        # 运行时指标
+        rm = r.get("runtime_metrics_json") or {}
+        if isinstance(rm, dict):
+            tokens_total_sum += int(rm.get("tokens_total") or 0)
+            tokens_prompt_sum += int(rm.get("tokens_prompt") or 0)
+            tokens_completion_sum += int(rm.get("tokens_completion") or 0)
+            llm_calls_sum += int(rm.get("llm_calls") or 0)
+            tsr = rm.get("tool_success_rate")
+            if tsr is not None:
+                try:
+                    tool_success_rates.append(float(tsr))
+                except (TypeError, ValueError):
+                    pass
+            tal = rm.get("tool_avg_latency_ms")
+            if tal is not None:
+                try:
+                    tool_latencies.append(float(tal))
+                except (TypeError, ValueError):
+                    pass
+
+        # 响应时间（基于 started_at / finished_at）
+        sa = r.get("started_at")
+        fa_time = r.get("finished_at")
+        if sa and fa_time:
+            try:
+                from datetime import datetime as _dt
+                t0 = _dt.fromisoformat(sa)
+                t1 = _dt.fromisoformat(fa_time)
+                response_times_ms.append((t1 - t0).total_seconds() * 1000)
+            except Exception:
+                pass
+
+        # 安全风险分布
+        sec = r.get("security_json") or {}
+        if isinstance(sec, dict) and sec:
+            band = sec.get("risk_band") or "unknown"
+            if band not in security_band_counts:
+                band = "unknown"
+            security_band_counts[band] += 1
+
+        # Ragas 指标
+        ragas = r.get("ragas_json") or {}
+        if isinstance(ragas, dict):
+            ar = ragas.get("answer_relevancy")
+            if ar is not None:
+                try:
+                    ragas_ar_vals.append(float(ar))
+                except (TypeError, ValueError):
+                    pass
+            ff = ragas.get("faithfulness")
+            if ff is not None:
+                try:
+                    ragas_ff_vals.append(float(ff))
+                except (TypeError, ValueError):
+                    pass
+
+        # Judge 指标
+        judge = r.get("judge_json") or {}
+        if isinstance(judge, dict):
+            rq = judge.get("reasoning_quality")
+            if rq is not None:
+                try:
+                    judge_rq_vals.append(float(rq))
+                except (TypeError, ValueError):
+                    pass
+            hs = judge.get("hallucination_severity")
+            if hs is not None:
+                try:
+                    judge_hs_vals.append(float(hs))
+                except (TypeError, ValueError):
+                    pass
+
         item_views.append(
             {
                 "item_index": r["item_index"],
+                "item_key": r.get("item_key") or str(r["item_index"]),
+                "description_snapshot": r.get("description_snapshot") or "",
                 "passed": bool(r["passed"]) if r.get("passed") is not None else None,
+                "started_at": r.get("started_at"),
+                "finished_at": r.get("finished_at"),
                 "radar": rv,
                 "ragas": r.get("ragas_json"),
                 "judge": r.get("judge_json"),
-                "runtime_metrics": r.get("runtime_metrics_json"),
+                "runtime_metrics": rm,
                 "security": r.get("security_json"),
+                "score_detail": r.get("score_detail"),
             }
         )
+
+    n = len(rows)
     default_axes = build_radar_vector({}, {}, summarize_runtime_metrics(None), {})
     mean_vec = mean_radar(radars, list(default_axes.keys())) if radars else {}
+
+    def _safe_mean(lst: List[float]) -> Optional[float]:
+        return round(sum(lst) / len(lst), 4) if lst else None
+
+    explicit_metrics = {
+        "tokens_total_sum": tokens_total_sum,
+        "tokens_prompt_sum": tokens_prompt_sum,
+        "tokens_completion_sum": tokens_completion_sum,
+        "tokens_avg_per_item": round(tokens_total_sum / n, 1) if n else None,
+        "llm_calls_sum": llm_calls_sum,
+        "llm_calls_avg": round(llm_calls_sum / n, 2) if n else None,
+        "tool_success_rate_avg": _safe_mean(tool_success_rates),
+        "tool_avg_latency_ms_avg": _safe_mean(tool_latencies),
+        "response_time_avg_ms": _safe_mean(response_times_ms),
+        "response_time_max_ms": round(max(response_times_ms), 1) if response_times_ms else None,
+        "security_band_counts": security_band_counts,
+        "ragas_answer_relevancy_avg": _safe_mean(ragas_ar_vals),
+        "ragas_faithfulness_avg": _safe_mean(ragas_ff_vals),
+        "judge_reasoning_quality_avg": _safe_mean(judge_rq_vals),
+        "judge_hallucination_severity_avg": _safe_mean(judge_hs_vals),
+    }
+
     return {
         "task_id": task_id,
         "radar_mean": mean_vec,
         "radar_axes": list(default_axes.keys()),
         "items": item_views,
         "items_with_radar": len(radars),
+        "explicit_metrics": explicit_metrics,
+        "total_items": n,
     }
 
 

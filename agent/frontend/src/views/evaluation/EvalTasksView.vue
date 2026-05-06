@@ -106,7 +106,8 @@
       <h2 class="card-title">新建评测任务</h2>
       <p class="card-desc">
         选择数据集与评测方法：<strong>面向结果</strong>侧重回溯最终答复与评分；
-        <strong>面向过程</strong>在评分策略上更强调轨迹完整性；两种方式均会持久化完整执行轨迹与安全扫描结果，便于在明细中回放。
+        <strong>面向过程</strong>在评分策略上更强调轨迹完整性；<strong>联合评估</strong>同时检查输出匹配与过程质量，两者均须通过。
+        所有方法均持久化完整执行轨迹、Ragas/Judge 模糊指标与安全扫描结果。
       </p>
       <div class="form-grid">
         <label class="field">
@@ -125,6 +126,7 @@
         <span class="method-label">评测方法</span>
         <label class="radio"><input v-model="newEvalMethod" type="radio" value="result" /> 面向结果</label>
         <label class="radio"><input v-model="newEvalMethod" type="radio" value="process" /> 面向过程</label>
+        <label class="radio"><input v-model="newEvalMethod" type="radio" value="combined" /> 联合评估（结果+过程）</label>
       </div>
       <button class="btn btn-primary" type="button" :disabled="!canCreateTask" @click="createTask">创建任务</button>
     </section>
@@ -171,6 +173,14 @@
               >
                 取消
               </button>
+              <button
+                v-if="t.status === 'pending'"
+                class="btn btn-sm btn-ghost"
+                type="button"
+                @click="openEdit(t)"
+              >
+                编辑
+              </button>
               <button class="btn btn-sm btn-ghost" type="button" @click="openResults(t.id)">明细</button>
               <button
                 class="btn btn-sm btn-ghost danger"
@@ -188,10 +198,45 @@
       <p v-if="taskErrBanner" class="banner-error">{{ taskErrBanner }}</p>
     </section>
 
+    <!-- 编辑任务 Modal -->
+    <div v-if="editOpen" class="modal-mask" @click.self="editOpen = false">
+      <div class="modal modal-sm">
+        <div class="modal-head">
+          <h3>编辑任务配置</h3>
+          <button type="button" class="btn-icon-inline" @click="editOpen = false">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted tiny">仅「待运行」状态的任务可修改名称与评测方法。</p>
+          <div class="form-grid" style="margin-top:14px">
+            <label class="field">
+              <span>任务名称</span>
+              <input v-model="editName" type="text" />
+            </label>
+            <label class="field">
+              <span>评测方法</span>
+              <select v-model="editMethod">
+                <option value="result">面向结果</option>
+                <option value="process">面向过程</option>
+                <option value="combined">联合评估（结果+过程）</option>
+              </select>
+            </label>
+          </div>
+          <p v-if="editErr" class="banner-error">{{ editErr }}</p>
+          <div class="actions" style="margin-top:14px">
+            <button class="btn btn-primary" :disabled="editSaving" @click="doEditSave">
+              {{ editSaving ? '保存中…' : '保存' }}
+            </button>
+            <button class="btn btn-ghost" @click="editOpen = false">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结果明细 Modal -->
     <div v-if="resultsOpen" class="modal-mask" @click.self="resultsOpen = false">
       <div class="modal">
         <div class="modal-head">
-          <h3>单条结果：{{ resultsTaskId }}</h3>
+          <h3>执行明细：{{ resultsTaskName }}</h3>
           <button type="button" class="btn-icon-inline" @click="resultsOpen = false">×</button>
         </div>
         <div v-if="resultsLoading" class="modal-body muted">加载中…</div>
@@ -201,6 +246,11 @@
               <tr>
                 <th>#</th>
                 <th>通过</th>
+                <th>Token总量</th>
+                <th>工具成功率</th>
+                <th>耗时(s)</th>
+                <th>推理质量</th>
+                <th>安全等级</th>
                 <th>摘要</th>
                 <th></th>
               </tr>
@@ -208,7 +258,16 @@
             <tbody>
               <tr v-for="r in resultRows" :key="r.id">
                 <td>{{ r.item_index }}</td>
-                <td>{{ r.passed === true ? '是' : r.passed === false ? '否' : '—' }}</td>
+                <td>
+                  <span :class="r.passed === true ? 'passed-ok' : r.passed === false ? 'passed-bad' : 'passed-na'">
+                    {{ r.passed === true ? '✓' : r.passed === false ? '✗' : '—' }}
+                  </span>
+                </td>
+                <td class="mono small">{{ rmTokens(r) }}</td>
+                <td class="mono small">{{ rmToolRate(r) }}</td>
+                <td class="mono small">{{ rmResponseTime(r) }}</td>
+                <td class="mono small">{{ judgeRQ(r) }}</td>
+                <td><span v-if="securityBlock(r)" :class="['band', securityBlock(r).risk_band]">{{ securityBlock(r).risk_band }}</span><span v-else class="muted">—</span></td>
                 <td class="mono small">{{ snippet(r.final_answer) }}</td>
                 <td class="row-actions tight">
                   <button type="button" class="btn btn-sm btn-ghost" @click="selectedReplay = r">回放</button>
@@ -219,11 +278,59 @@
 
           <div v-if="selectedReplay" class="replay-detail">
             <div class="replay-head">
-              <h4>条目 #{{ selectedReplay.item_index }} · 过程溯源与安全</h4>
+              <h4>条目 #{{ selectedReplay.item_index }} · 过程溯源与多维指标</h4>
               <button type="button" class="btn-icon-inline" title="关闭详情" @click="selectedReplay = null">×</button>
             </div>
 
-            <div class="replay-columns">
+            <!-- 显式指标卡片 -->
+            <div class="metrics-row">
+              <div class="mcard">
+                <span class="mlabel">Token 总量</span>
+                <strong class="mval">{{ rmTokens(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">提示/补全</span>
+                <strong class="mval mono small">{{ rmTokenDetail(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">LLM 调用</span>
+                <strong class="mval">{{ rmLlmCalls(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">工具成功率</span>
+                <strong class="mval">{{ rmToolRate(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">平均工具延迟</span>
+                <strong class="mval">{{ rmToolLatency(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">总耗时</span>
+                <strong class="mval">{{ rmResponseTime(selectedReplay) }}</strong>
+              </div>
+            </div>
+
+            <!-- 模糊指标卡片 -->
+            <div class="metrics-row" style="margin-top:10px">
+              <div class="mcard">
+                <span class="mlabel">答复相关性 (Ragas)</span>
+                <strong class="mval">{{ ragasAR(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">忠实度 (Ragas)</span>
+                <strong class="mval">{{ ragasFF(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">推理质量 (Judge)</span>
+                <strong class="mval">{{ judgeRQ(selectedReplay) }}</strong>
+              </div>
+              <div class="mcard">
+                <span class="mlabel">幻觉严重度 (Judge)</span>
+                <strong class="mval">{{ judgeHS(selectedReplay) }}</strong>
+              </div>
+            </div>
+
+            <div class="replay-columns" style="margin-top:14px">
               <div class="replay-col">
                 <h5 class="sub-head">思考路径与状态</h5>
                 <p class="tiny muted">按时间顺序展示 LangGraph 节点写入的 phase、内容与精简 state_outline（用于演示内部状态流转）。</p>
@@ -363,8 +470,17 @@ const newTaskName = ref('')
 const newTaskDatasetId = ref('')
 const newEvalMethod = ref('result')
 
+// 编辑任务
+const editOpen = ref(false)
+const editTaskId = ref('')
+const editName = ref('')
+const editMethod = ref('result')
+const editSaving = ref(false)
+const editErr = ref('')
+
 const resultsOpen = ref(false)
 const resultsTaskId = ref('')
+const resultsTaskName = ref('')
 const resultRows = ref([])
 const resultsLoading = ref(false)
 const taskErrBanner = ref(null)
@@ -390,7 +506,9 @@ const canCreateTask = computed(
 )
 
 function methodLabel(m) {
-  return m === 'process' ? '面向过程' : '面向结果'
+  if (m === 'process') return '面向过程'
+  if (m === 'combined') return '联合评估'
+  return '面向结果'
 }
 
 /** 评测线程仍在收尾（含取消中） */
@@ -544,6 +662,8 @@ async function cancelRun(id) {
 
 async function openResults(taskId) {
   resultsTaskId.value = taskId
+  const t = ev.tasks.find(x => x.id === taskId)
+  resultsTaskName.value = t?.name || taskId
   resultsOpen.value = true
   selectedReplay.value = null
   resultsLoading.value = true
@@ -555,6 +675,98 @@ async function openResults(taskId) {
   } finally {
     resultsLoading.value = false
   }
+}
+
+function openEdit(t) {
+  editTaskId.value = t.id
+  editName.value = t.name
+  editMethod.value = t.eval_method || 'result'
+  editErr.value = ''
+  editOpen.value = true
+}
+
+async function doEditSave() {
+  editErr.value = ''
+  editSaving.value = true
+  try {
+    await ev.editTask(editTaskId.value, {
+      name: editName.value.trim() || undefined,
+      eval_method: editMethod.value
+    })
+    editOpen.value = false
+    flashOk('任务配置已更新')
+  } catch (e) {
+    editErr.value = ev.error || e?.response?.data?.detail || '保存失败'
+  } finally {
+    editSaving.value = false
+  }
+}
+
+// 运行时指标辅助函数
+function _rm(r) {
+  return r?.runtime_metrics_json || {}
+}
+
+function rmTokens(r) {
+  const v = _rm(r).tokens_total
+  return v != null ? v.toLocaleString() : '—'
+}
+
+function rmTokenDetail(r) {
+  const rm = _rm(r)
+  const p = rm.tokens_prompt
+  const c = rm.tokens_completion
+  if (p == null && c == null) return '—'
+  return `${(p || 0).toLocaleString()} / ${(c || 0).toLocaleString()}`
+}
+
+function rmLlmCalls(r) {
+  const v = _rm(r).llm_calls
+  return v != null ? v : '—'
+}
+
+function rmToolRate(r) {
+  const v = _rm(r).tool_success_rate
+  if (v == null) return '—'
+  return (v * 100).toFixed(0) + '%'
+}
+
+function rmToolLatency(r) {
+  const v = _rm(r).tool_avg_latency_ms
+  if (v == null) return '—'
+  return v.toFixed(0) + ' ms'
+}
+
+function rmResponseTime(r) {
+  const sa = r?.started_at
+  const fa = r?.finished_at
+  if (!sa || !fa) return '—'
+  try {
+    const ms = new Date(fa) - new Date(sa)
+    return (ms / 1000).toFixed(1) + ' s'
+  } catch {
+    return '—'
+  }
+}
+
+function ragasAR(r) {
+  const v = r?.ragas_json?.answer_relevancy
+  return v != null ? v.toFixed(3) : '—'
+}
+
+function ragasFF(r) {
+  const v = r?.ragas_json?.faithfulness
+  return v != null ? v.toFixed(3) : '—'
+}
+
+function judgeRQ(r) {
+  const v = r?.judge_json?.reasoning_quality
+  return v != null ? v + '/10' : '—'
+}
+
+function judgeHS(r) {
+  const v = r?.judge_json?.hallucination_severity
+  return v != null ? v + '/10' : '—'
 }
 </script>
 
@@ -1095,5 +1307,53 @@ async function openResults(taskId) {
 .fcat {
   color: var(--text-muted);
   min-width: 110px;
+}
+
+.modal-sm {
+  max-width: 560px !important;
+}
+
+.metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mcard {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  flex: 1;
+}
+
+.mlabel {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mval {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.passed-ok {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.passed-bad {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.passed-na {
+  color: var(--text-muted);
 }
 </style>

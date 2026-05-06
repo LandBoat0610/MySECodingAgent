@@ -7,10 +7,12 @@ import {
   createEvalDatasetJson,
   deleteEvalDataset,
   createEvalTask,
+  patchEvalTask,
   deleteEvalTask,
   startEvalTask,
   cancelEvalTask,
-  getEvalTaskResults
+  getEvalTaskResults,
+  getEvalTaskAnalytics
 } from '../api/index.js'
 
 export const useEvaluationStore = defineStore('evaluation', () => {
@@ -107,6 +109,15 @@ export const useEvaluationStore = defineStore('evaluation', () => {
     return getEvalTaskResults(taskId)
   }
 
+  async function editTask(id, payload) {
+    await patchEvalTask(id, payload)
+    await loadTasks()
+  }
+
+  async function fetchAnalytics(taskId) {
+    return getEvalTaskAnalytics(taskId)
+  }
+
   function clearError() {
     error.value = null
   }
@@ -123,10 +134,12 @@ export const useEvaluationStore = defineStore('evaluation', () => {
     createDatasetFromJson,
     removeDataset,
     addTask,
+    editTask,
     removeTask,
     runTask,
     stopTask,
     fetchResults,
+    fetchAnalytics,
     clearError
   }
 })
