@@ -27,6 +27,7 @@ function createMockStore(overrides = {}) {
         pendingPlans: [],
         doSendChat: vi.fn(),
         doPlanAction: vi.fn(),
+        doStopSession: vi.fn(),
         disconnectWebSocket: vi.fn(),
         ...overrides
     }
@@ -251,18 +252,15 @@ describe('ChatPanel.vue', () => {
             expect(wrapper.find('.btn-danger').exists()).toBe(false)
         })
 
-        it('should call doPlanAction and disconnect on Stop', async () => {
+        it('should call doStopSession on Stop button click', async () => {
             const mockStore = createMockStore({
-                agentRunning: true,
-                pendingPlans: [{ id: 'plan-1', content: 'Step', status: 'pending' }]
+                agentRunning: true
             })
-            mockStore.doPlanAction.mockResolvedValue({ status: 'stopped' })
+            mockStore.doStopSession.mockResolvedValue(undefined)
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ChatPanel)
             await wrapper.find('.btn-danger').trigger('click')
-            expect(mockStore.doPlanAction).toHaveBeenCalledWith('plan-1', 'stop')
-            await new Promise(r => setTimeout(r, 10))
-            expect(mockStore.disconnectWebSocket).toHaveBeenCalled()
+            expect(mockStore.doStopSession).toHaveBeenCalled()
         })
     })
 

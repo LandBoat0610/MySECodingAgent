@@ -22,6 +22,7 @@ vi.mock('../../api/index.js', () => ({
     getPlans: vi.fn(),
     planAction: vi.fn(),
     getFileTree: vi.fn(),
+    stopSession: vi.fn(),
     createWebSocket: vi.fn()
 }))
 
@@ -498,20 +499,22 @@ describe('agent store', () => {
             store.sessionStatus = 'running'
             store.connectWebSocket()
 
-            // manually trigger close
+            // manually trigger close (unintentional, wsIntentionalClose=false)
             store.wsConnection.onclose()
 
-            expect(store.agentRunning).toBe(false)
+            // wsConnection is set to null by handler
             expect(store.wsConnection).toBeNull()
+            // agentRunning stays true because reconnect is pending
+            expect(store.agentRunning).toBe(true)
 
-            // should attempt restore after 2 seconds
+            // after 2s backoff, connectWebSocket is called again
             await vi.advanceTimersByTimeAsync(2000)
-            expect(api.getSessionState).toHaveBeenCalled()
+            expect(api.createWebSocket).toHaveBeenCalledTimes(2) // first connect + reconnect
 
             vi.useRealTimers()
         })
 
-        it('should handle ws.onerror', () => {
+        it('should handle ws.onerror and set agentRunning to false', () => {
             const store = createStore()
             store.selectedProjectId = 'p1'
             store.selectedSessionId = 's1'

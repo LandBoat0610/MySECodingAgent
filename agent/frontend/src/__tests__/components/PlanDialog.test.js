@@ -74,7 +74,7 @@ describe('PlanDialog.vue', () => {
 
     // ---- 操作按钮 ----
     describe('action buttons', () => {
-        it('should call doPlanAction with "agree" and connect WebSocket', async () => {
+        it('should call doPlanAction with "agree", then fetchPlans and restoreSessionState', async () => {
             const mockStore = createMockStore({
                 pendingPlans: [{ id: 'plan-1', content: 'Step', status: 'pending' }]
             })
@@ -84,8 +84,10 @@ describe('PlanDialog.vue', () => {
             expect(mockStore.doPlanAction).toHaveBeenCalledWith('plan-1', 'agree')
             // 等待异步完成
             await new Promise(r => setTimeout(r, 10))
-            expect(mockStore.connectWebSocket).toHaveBeenCalled()
+            // doPlanAction internally handles connectWebSocket in real store;
+            // component calls fetchPlans + restoreSessionState after action
             expect(mockStore.fetchPlans).toHaveBeenCalled()
+            expect(mockStore.restoreSessionState).toHaveBeenCalled()
         })
 
         it('should call doPlanAction with "refine"', async () => {

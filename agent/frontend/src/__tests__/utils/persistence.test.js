@@ -26,10 +26,11 @@ describe('persistence utils', () => {
             expect(getPersistedProjectId()).toBe('proj-abc-123')
         })
 
-        it('should store null as string "null" and return it', () => {
+        it('should remove key when null/empty id is stored', () => {
+            persistProjectId('temp')
+            expect(getPersistedProjectId()).toBe('temp')
             persistProjectId(null)
-            // localStorage stores null as "null"
-            expect(getPersistedProjectId()).toBe('null')
+            expect(getPersistedProjectId()).toBeNull()
         })
 
         it('should overwrite existing project id', () => {
