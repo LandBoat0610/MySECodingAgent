@@ -7,6 +7,8 @@ from typing import Dict, List, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -29,6 +31,8 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
+load_dotenv()
+app = FastAPI(title="Agent Platform", version="0.1.0")
 
 WORKSPACES_ROOT = os.path.abspath("workspaces")
 os.makedirs(WORKSPACES_ROOT, exist_ok=True)

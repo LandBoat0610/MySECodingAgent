@@ -110,7 +110,28 @@ pytest_graph_and_main:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# 4. 合并覆盖率
+# 4. 前端单元测试
+vitest_frontend:
+  stage: test
+  image: node:20
+  before_script:
+    - cd agent/frontend
+    - npm install
+  script:
+    - npx vitest run --coverage
+  artifacts:
+    paths:
+      - agent/frontend/coverage/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: agent/frontend/coverage/cobertura-coverage.xml
+      junit: agent/frontend/junit.xml
+    expire_in: 1 day
+  coverage: '/All files[^|]*\|[^|]*\s+([\d.]+)/'
+  needs: []
+
+# 5. 合并覆盖率
 coverage_merge:
   stage: report
   image: python:3.11
