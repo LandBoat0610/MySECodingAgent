@@ -115,7 +115,7 @@ pytest_eval:
   stage: test
   script:
     - $env:COVERAGE_FILE = ".coverage.eval"
-    - python -m pytest tests/test_eval_dataset.py tests/test_eval_scoring.py tests/test_eval_security.py tests/test_runtime_metrics.py
+    - python -m pytest tests/test_eval_dataset.py tests/test_eval_scoring.py tests/test_eval_security.py tests/test_runtime_metrics.py tests/test_eval_quality.py tests/test_evaluation_jobs.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.eval.xml
   artifacts:
