@@ -15,6 +15,39 @@ lint → security → test → report → build
 
 ---
 
+## Runner 环境
+
+| 项目            | 配置                         |
+| --------------- | ---------------------------- |
+| **Executor**    | `docker`（Linux 容器模式）   |
+| **默认镜像**    | `python:3.11`                |
+| **Runner 名称** | `ymm`                        |
+| **GitLab 地址** | `http://172.29.4.49`（内网） |
+
+> **关键提醒**：必须使用 `docker` executor，**不能**使用 `docker-windows` executor。
+> 因为 `.gitlab-ci.yml` 中指定的 `image: python:3.11`、`image: node:20` 等均为 Linux 镜像，
+> 在 Windows 容器模式下无法运行。
+
+### Runner 注册命令（参考）
+
+```powershell
+cd D:\GitLab-Runner
+.\gitlab-runner.exe register --url http://172.29.4.49 --token <你的token>
+
+# 交互式回答：
+# Enter an executor: docker
+# Enter the default Docker image: python:3.11
+```
+
+注册完成后启动 runner：
+
+```powershell
+.\gitlab-runner.exe install   # 安装为 Windows 服务
+.\gitlab-runner.exe start     # 启动服务
+```
+
+---
+
 ## 整体流水线流程图
 
 ```
@@ -36,12 +69,26 @@ push to main
 
 ## 新增文件清单
 
-| 文件 | 说明 |
-|------|------|
-| `.gitlab-ci.yml` | 在原有 CI 基础上新增 `build` stage |
-| `docker-compose.yml` | 本地联调时使用 |
-| `agent/frontend/Dockerfile.frontend` | 前端多阶段构建（npm build → nginx 托管） |
-| `agent/frontend/nginx.conf` | nginx 配置（history 路由 + API 反向代理） |
+| 文件                                 | 说明                                      |
+| ------------------------------------ | ----------------------------------------- |
+| `.gitlab-ci.yml`                     | 在原有 CI 基础上新增 `build` stage        |
+| `docker-compose.yml`                 | 本地联调时使用                            |
+| `agent/frontend/Dockerfile.frontend` | 前端多阶段构建（npm build → nginx 托管）  |
+| `agent/frontend/nginx.conf`          | nginx 配置（history 路由 + API 反向代理） |
+
+---
+
+## `.gitlab-ci.yml` 注意事项
+
+### 必须使用 bash 语法
+
+由于 CI 任务在 Linux Docker 容器中运行（`image: python:3.11`），脚本语法必须是 **bash**，不能使用 PowerShell。
+
+| 场景         | ❌ 错误（PowerShell）                       | ✅ 正确（bash）                             |
+| ------------ | ------------------------------------------ | ------------------------------------------ |
+| 设置环境变量 | `$env:COVERAGE_FILE = ".coverage.backend"` | `export COVERAGE_FILE=".coverage.backend"` |
+| 安装包       | `pip install xxx`                          | `pip install xxx`（无变化）                |
+| 条件判断     | `if ($?) { ... }`                          | `if [ $? -eq 0 ]; then ... fi`             |
 
 ---
 
@@ -52,9 +99,10 @@ push to main
 `CI_REGISTRY`、`CI_REGISTRY_USER`、`CI_REGISTRY_PASSWORD`、`CI_REGISTRY_IMAGE`、`CI_COMMIT_SHORT_SHA`
 这些都是 GitLab 内置变量，流水线运行时会自动注入。
 
-唯一要确认的一点：**GitLab 项目要开启 Container Registry**。
-- 进入 GitLab 项目页面 → Settings → General → Visibility, project features, permissions
-- 确保 **Container Registry** 是开启状态（默认就是开启的）
+需要确认的事项：
+1. **Docker Desktop** 已安装并处于 **Linux 容器模式**
+2. GitLab Runner 已注册为 **`docker` executor**
+3. **GitLab 项目已开启 Container Registry**（Settings → General → Visibility → Container Registry）
 
 ---
 
@@ -96,9 +144,21 @@ docker-compose up
 
 **Q: `build_docker` 需要 GitLab Runner 支持 Docker-in-Docker，我们的 Runner 支持吗？**
 
-看你们用的 Runner 类型：
-- 学校私服 GitLab 的 shared runner 通常支持
-- 如果报错说 `docker:dind` 服务无法启动，可以把 `build_docker` 的 `when` 改为 `when: manual`，这样不影响 CI 阶段的正常运行，演示时手动触发就行
+已配置的 `docker` executor runner 支持 Docker-in-Docker（`build_docker` job 使用 `docker:24-dind` service）。
+GitLab 私服的 shared runner 通常也支持。如果报错说 `docker:dind` 服务无法启动，可以把 `build_docker` 的 `when` 改为 `when: manual`，这样不影响 CI 阶段的正常运行，演示时手动触发就行。
+
+**Q: Runner 报 403 Forbidden 怎么办？**
+
+说明 Runner 的注册 token 已失效或在 GitLab 上被删除。解决方法：
+1. 进入 GitLab 项目 → Settings → CI/CD → Runners
+2. 删除旧 runner，重新点击 **"New project runner"** 创建
+3. 在本机重新执行 `gitlab-runner register` 命令
+4. 启动 runner：`gitlab-runner start`
+
+**Q: 为什么 CI 脚本里不能用 `$env:` 语法？**
+
+因为 CI 任务在 Linux Docker 容器中运行，shell 是 bash 而非 PowerShell。
+`$env:VAR = "value"` 是 PowerShell 语法，在 bash 中应使用 `export VAR="value"`。
 
 **Q: 前端 Dockerfile 构建时 npm install 很慢怎么办？**
 

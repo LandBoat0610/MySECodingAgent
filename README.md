@@ -498,7 +498,42 @@ npm run test -- --coverage
 
 ---
 
-## 10. 技术栈
+## 10. CI/CD 流水线
+
+本项目使用 GitLab CI/CD，配置见 `.gitlab-ci.yml`，共 5 个阶段：
+
+```
+lint → security → test → report → build
+```
+
+| 阶段 | Job | 说明 |
+|------|-----|------|
+| lint | `flake8_lint` | Python 代码风格检查 |
+| security | `bandit_scan` | 安全漏洞扫描 |
+| test | `pytest_backend / tools / llm / graph_main / eval` | 后端单元测试 + 覆盖率 |
+| test | `vitest_frontend` | 前端单元测试 |
+| report | `coverage_merge` | 合并覆盖率报告 |
+| build | `build_docker` | 构建 Docker 镜像 → 推送 GitLab Container Registry（仅 main 分支） |
+
+### Runner 要求
+
+- **Executor**：`docker`（Linux 容器模式）
+- **默认镜像**：`python:3.11`
+- Runner 注册与配置详见 [docs/CD部署配置说明.md](docs/CD部署配置说明.md)
+
+### 运行测试
+
+```bash
+# 后端
+pytest tests/ -v --cov=agent/ --cov-report=term-missing
+
+# 前端
+cd agent/frontend && npx vitest run --coverage
+```
+
+---
+
+## 11. 技术栈
 
 | 层级        | 技术                                                    |
 | ----------- | ------------------------------------------------------- |

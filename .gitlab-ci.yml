@@ -42,15 +42,14 @@ bandit_scan:
 .test_base:
   image: python:3.11
   before_script:
-    - python -m pip install --upgrade pip
-    - python -m pip install -r requirements.txt
-    - python -m pip install pytest pytest-cov python-multipart
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov python-multipart
 
 pytest_backend:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.backend"
+    - export COVERAGE_FILE=".coverage.backend"
     - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py tests/test_platform_settings.py tests/test_eval_storage.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.backend.xml
@@ -67,7 +66,7 @@ pytest_tools:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.tools"
+    - export COVERAGE_FILE=".coverage.tools"
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.tools.xml
@@ -84,7 +83,7 @@ pytest_llm:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.llm"
+    - export COVERAGE_FILE=".coverage.llm"
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.llm.xml
@@ -101,7 +100,7 @@ pytest_graph_and_main:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.graph_main"
+    - export COVERAGE_FILE=".coverage.graph_main"
     - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.graph_main.xml
@@ -118,7 +117,7 @@ pytest_eval:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.eval"
+    - export COVERAGE_FILE=".coverage.eval"
     - python -m pytest tests/test_eval_dataset.py tests/test_eval_scoring.py tests/test_eval_security.py tests/test_runtime_metrics.py tests/test_eval_quality.py tests/test_evaluation_jobs.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.eval.xml
@@ -139,10 +138,11 @@ vitest_frontend:
     - cd agent/frontend
     - npm install
   script:
-    - npx vitest run --coverage
+    - npx vitest run --coverage --reporter=verbose --reporter=junit --outputFile=junit.xml
   artifacts:
     paths:
       - agent/frontend/coverage/
+      - agent/frontend/junit.xml
     reports:
       coverage_report:
         coverage_format: cobertura
