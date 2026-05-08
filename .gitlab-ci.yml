@@ -28,21 +28,26 @@ build_ci_image:
   stage: prepare
   image: docker:24
   services:
-    - docker:24-dind
+    - name: docker:24-dind
+      alias: docker                    # 明确服务别名，确保主机名可用
   variables:
-    DOCKER_TLS_CERTDIR: "/certs"
+    # 关闭 TLS，简化连接（在受信任的 CI 环境中安全）
+    DOCKER_TLS_CERTDIR: ""
+    # 手动指定 Docker 守护进程地址
+    DOCKER_HOST: tcp://docker:2375
   before_script:
+    # 可选：等待 docker 服务完全就绪
+    - until docker info; do sleep 1; done
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
-    # 使用 ci.Dockerfile 构建镜像
     - docker build -f ci.Dockerfile -t "$CI_TEST_IMAGE" .
     - docker push "$CI_TEST_IMAGE"
-  only:
-    changes:
-      - requirements.txt
-      - ci.Dockerfile
-  # 即使构建失败，主流水线可能仍想继续？不，测试需要这个镜像，所以失败时应停止
-  # 如果希望允许失败并回退到 python:3.11 安装依赖，可以加 allow_failure: true，但就失去了自定义镜像的意义。
+  # 暂时移除 only: changes，确保每次流水线都构建镜像（或者先注释掉以验证可用性）
+  # only:
+  #   changes:
+  #     - requirements.txt
+  #     - ci.Dockerfile
+
 
 # 1. 代码风格检查（仍然可以用原始镜像，或者也可以使用自定义镜像）
 flake8_lint:
