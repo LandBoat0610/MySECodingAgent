@@ -157,7 +157,7 @@ coverage_merge:
   stage: report
   image: python:3.11
   before_script:
-    - pip install coverage
+    - python -m pip install coverage
   script:
     - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main .coverage.eval
     - python -m coverage report -m
