@@ -1,4 +1,5 @@
 stages:
+  - prepare              # 新增：构建自定义测试镜像
   - lint
   - security
   - test
@@ -17,8 +18,33 @@ variables:
   # Docker 镜像名称，使用 GitLab 内置的 Container Registry
   IMAGE_NAME: "$CI_REGISTRY_IMAGE"
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  # 自定义测试镜像的完整名称（固定标签 latest 或者使用 CI_PIPELINE_ID）
+  CI_TEST_IMAGE: "$CI_REGISTRY_IMAGE/ci-python:latest"
 
-# 1. 代码风格检查
+# ============================================================
+# 0. 构建自定义测试镜像（包含所有依赖）
+# ============================================================
+build_ci_image:
+  stage: prepare
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    # 使用 ci.Dockerfile 构建镜像
+    - docker build -f ci.Dockerfile -t "$CI_TEST_IMAGE" .
+    - docker push "$CI_TEST_IMAGE"
+  only:
+    changes:
+      - requirements.txt
+      - ci.Dockerfile
+  # 即使构建失败，主流水线可能仍想继续？不，测试需要这个镜像，所以失败时应停止
+  # 如果希望允许失败并回退到 python:3.11 安装依赖，可以加 allow_failure: true，但就失去了自定义镜像的意义。
+
+# 1. 代码风格检查（仍然可以用原始镜像，或者也可以使用自定义镜像）
 flake8_lint:
   stage: lint
   image: python:3.11
@@ -27,6 +53,7 @@ flake8_lint:
     - python -m flake8 agent/ tests/ --max-line-length=120
   allow_failure: true
   needs: []
+  # 和自定义镜像无关，保持原样
 
 # 2. 安全扫描
 bandit_scan:
@@ -38,12 +65,16 @@ bandit_scan:
   allow_failure: true
   needs: []
 
-# 3. 单元测试（公共基类）
+# ============================================================
+# 3. 单元测试 — 使用自定义镜像，不再重复安装依赖
+# ============================================================
 .test_base:
-  image: python:3.11
+  # 👇 关键修改：使用我们构建的自定义镜像
+  image: $CI_TEST_IMAGE
+  # ❌ 删除 before_script 中的 pip install 命令（依赖已在镜像中）
   before_script:
-    - pip install -r requirements.txt
-    - pip install pytest pytest-cov python-multipart
+    # 可选：如果有额外需要在运行时安装的包（例如某个测试需要的临时工具），可以保留，但一般不需要
+    - echo "Using prebuilt CI image with all dependencies."
 
 pytest_backend:
   extends: .test_base
@@ -61,6 +92,7 @@ pytest_backend:
       junit: junit.backend.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
+  needs: ["build_ci_image"]   # 确保镜像构建完成
 
 pytest_tools:
   extends: .test_base
@@ -78,6 +110,7 @@ pytest_tools:
       junit: junit.tools.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
+  needs: ["build_ci_image"]
 
 pytest_llm:
   extends: .test_base
@@ -95,6 +128,7 @@ pytest_llm:
       junit: junit.llm.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
+  needs: ["build_ci_image"]
 
 pytest_graph_and_main:
   extends: .test_base
@@ -112,6 +146,7 @@ pytest_graph_and_main:
       junit: junit.graph_main.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
+  needs: ["build_ci_image"]
 
 pytest_eval:
   extends: .test_base
@@ -129,8 +164,9 @@ pytest_eval:
       junit: junit.eval.xml
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
+  needs: ["build_ci_image"]
 
-# 4. 前端单元测试
+# 4. 前端单元测试（保持不变，因为它用的是 node 镜像）
 vitest_frontend:
   stage: test
   image: node:20
@@ -152,10 +188,10 @@ vitest_frontend:
   coverage: '/All files[^|]*\|[^|]*\s+([\d.]+)/'
   needs: []
 
-# 5. 合并覆盖率
+# 5. 合并覆盖率（使用自定义镜像也可以）
 coverage_merge:
   stage: report
-  image: python:3.11
+  image: python:3.11   # 或者也可以用 $CI_TEST_IMAGE，但考虑到只需要 coverage 工具，轻量即可
   before_script:
     - python -m pip install coverage
   script:
@@ -177,10 +213,7 @@ coverage_merge:
     - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# ============================================================
-# CD 阶段：构建 Docker 镜像并推送到 GitLab Container Registry
-# 仅在 main 分支触发，CI 全部通过后自动执行
-# ============================================================
+# CD 阶段保持不变
 build_docker:
   stage: build
   image: docker:24
