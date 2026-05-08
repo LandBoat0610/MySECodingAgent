@@ -177,7 +177,6 @@ coverage_merge:
     - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-
 # ============================================================
 # CD 阶段：构建 Docker 镜像并推送到 GitLab Container Registry
 # 仅在 main 分支触发，CI 全部通过后自动执行
@@ -190,18 +189,15 @@ build_docker:
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
-    # 登录 GitLab 内置的 Container Registry（变量由 GitLab 自动注入，无需手动配置）
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
-    # 构建后端镜像，同时打两个 tag：commit SHA（可回滚）和 latest
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
     - docker push "$IMAGE_NAME/backend:$IMAGE_TAG"
     - docker push "$IMAGE_NAME/backend:latest"
-    # 构建前端静态资源镜像
     - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
     - docker push "$IMAGE_NAME/frontend:$IMAGE_TAG"
     - docker push "$IMAGE_NAME/frontend:latest"
-    - echo "镜像已推送到 GitLab Container Registry，可通过 docker pull $IMAGE_NAME/backend:latest 拉取运行"
+    - echo "镜像已推送到 GitLab Container Registry"
   only:
     - main
   needs:
