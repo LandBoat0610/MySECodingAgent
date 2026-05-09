@@ -8,25 +8,41 @@
 lint → security → test → report → build
 ```
 
-前 4 个阶段（CI）已完成，`build` 阶段为本次新增的 CD 内容。
-
-> **说明**：本方案不依赖外部服务器，使用 GitLab 内置的 Container Registry 作为镜像仓库，
-> 只要 `build_docker` job 跑通，即证明"交付物可以打包为可运行的容器镜像"。
+前 4 个阶段（CI）使用自定义 Docker 镜像 `ci-python:latest` 加速执行，`build` 阶段通过挂载的宿主机 Docker socket 直接构建部署镜像。
 
 ---
 
 ## Runner 环境
 
-| 项目            | 配置                         |
-| --------------- | ---------------------------- |
-| **Executor**    | `docker`（Linux 容器模式）   |
-| **默认镜像**    | `python:3.11`                |
-| **Runner 名称** | `ymm`                        |
-| **GitLab 地址** | `http://172.29.4.49`（内网） |
+### 当前配置
 
-> **关键提醒**：必须使用 `docker` executor，**不能**使用 `docker-windows` executor。
-> 因为 `.gitlab-ci.yml` 中指定的 `image: python:3.11`、`image: node:20` 等均为 Linux 镜像，
-> 在 Windows 容器模式下无法运行。
+| 项目            | 配置                                                  |
+| --------------- | ----------------------------------------------------- |
+| **Executor**    | `docker`（Linux 容器模式）                            |
+| **Runner 名称** | `ymm`                                                 |
+| **GitLab 地址** | `http://172.29.4.49`（内网）                          |
+| **pull_policy** | `if-not-present`（优先使用本地镜像）                  |
+| **privileged**  | `true`（允许容器内使用 Docker）                       |
+| **volumes**     | 挂载 `/var/run/docker.sock`（复用宿主机 Docker 引擎） |
+
+> **关键提醒**：必须使用 `docker` executor，**不能**使用 `docker-windows` 或 `shell` executor。
+
+### config.toml 配置参考
+
+```toml
+concurrent = 4
+check_interval = 0
+
+[[runners]]
+  name = "ymm"
+  url = "http://172.29.4.49"
+  executor = "docker"
+  [runners.docker]
+    image = "python:3.11"
+    privileged = true
+    volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
+    pull_policy = "if-not-present"
+```
 
 ### Runner 注册命令（参考）
 
@@ -48,17 +64,47 @@ cd D:\GitLab-Runner
 
 ---
 
+## 自定义 CI 镜像（ci-python）
+
+为避免每次 CI 运行都执行 `pip install`（耗时 2-3 分钟），项目提供了 `ci.Dockerfile`：
+
+```dockerfile
+FROM python:3.11-slim
+COPY requirements.txt .
+RUN pip install --no-cache-dir \
+    -r requirements.txt \
+    pytest pytest-cov python-multipart \
+    flake8 bandit coverage
+```
+
+### 构建命令
+
+```powershell
+# 在项目根目录执行（需先启动 Docker Desktop）
+docker build -f ci.Dockerfile -t ci-python .
+```
+
+### 更新时机
+
+只有当 `requirements.txt` 或 `ci.Dockerfile` 发生变更时才需要重新构建。
+
+### 工作原理
+
+Runner 配置了 `pull_policy = "if-not-present"` 并挂载了宿主机 Docker socket，CI job 启动时 Docker executor 先在本地查找 `ci-python:latest`，找到则直接使用，不访问任何外部 Registry。
+
+---
+
 ## 整体流水线流程图
 
 ```
-push to main
+push to any branch
      │
-     ├─ lint       (flake8 代码风格检查)
-     ├─ security   (bandit 安全扫描)
-     ├─ test       (pytest × 5 + vitest，并行运行)
-     ├─ report     (coverage 覆盖率合并)
+     ├─ lint       (flake8 代码风格检查, image: ci-python)
+     ├─ security   (bandit 安全扫描, image: ci-python)
+     ├─ test       (pytest × 5 + vitest, 并行运行, image: ci-python / node:20)
+     ├─ report     (coverage 覆盖率合并, image: ci-python)
      │
-     └─ [build] build_docker  ← CI 全部通过后自动触发
+     └─ [main only] build_docker  ← CI 全部通过后自动触发
           ├─ 构建后端镜像  → 推送 registry.../backend:SHA
           ├─ 构建后端镜像  → 推送 registry.../backend:latest
           ├─ 构建前端镜像  → 推送 registry.../frontend:SHA
@@ -69,12 +115,14 @@ push to main
 
 ## 新增文件清单
 
-| 文件                                 | 说明                                      |
-| ------------------------------------ | ----------------------------------------- |
-| `.gitlab-ci.yml`                     | 在原有 CI 基础上新增 `build` stage        |
-| `docker-compose.yml`                 | 本地联调时使用                            |
-| `agent/frontend/Dockerfile.frontend` | 前端多阶段构建（npm build → nginx 托管）  |
-| `agent/frontend/nginx.conf`          | nginx 配置（history 路由 + API 反向代理） |
+| 文件                                 | 说明                                           |
+| ------------------------------------ | ---------------------------------------------- |
+| `.gitlab-ci.yml`                     | 完整 CI/CD 流水线配置（5 阶段）                |
+| `ci.Dockerfile`                      | CI 专用镜像（预装全部 Python 依赖 + 测试工具） |
+| `docker-compose.yml`                 | 前后端本地联调编排                             |
+| `Dockerfile`                         | 后端生产部署镜像                               |
+| `agent/frontend/Dockerfile.frontend` | 前端多阶段构建（npm build → nginx 托管）       |
+| `agent/frontend/nginx.conf`          | nginx 配置（history 路由 + API 反向代理）      |
 
 ---
 
@@ -82,13 +130,17 @@ push to main
 
 ### 必须使用 bash 语法
 
-由于 CI 任务在 Linux Docker 容器中运行（`image: python:3.11`），脚本语法必须是 **bash**，不能使用 PowerShell。
+由于 CI 任务在 Linux Docker 容器中运行，脚本语法必须是 **bash**，不能使用 PowerShell。
 
 | 场景         | ❌ 错误（PowerShell）                       | ✅ 正确（bash）                             |
 | ------------ | ------------------------------------------ | ------------------------------------------ |
 | 设置环境变量 | `$env:COVERAGE_FILE = ".coverage.backend"` | `export COVERAGE_FILE=".coverage.backend"` |
-| 安装包       | `pip install xxx`                          | `pip install xxx`（无变化）                |
+| 安装包       | （CI 镜像已预装，不需要）                  | —                                          |
 | 条件判断     | `if ($?) { ... }`                          | `if [ $? -eq 0 ]; then ... fi`             |
+
+### 不需要 docker:dind
+
+`build_docker` job 通过挂载的宿主机 Docker socket（`/var/run/docker.sock`）直接操作宿主机 Docker 引擎，无需启动额外的 `docker:24-dind` 服务容器。这避免了 dind 在 Windows Docker Desktop 下的兼容性问题。
 
 ---
 
@@ -96,39 +148,28 @@ push to main
 
 **不需要额外配置任何 GitLab 变量！**
 
-`CI_REGISTRY`、`CI_REGISTRY_USER`、`CI_REGISTRY_PASSWORD`、`CI_REGISTRY_IMAGE`、`CI_COMMIT_SHORT_SHA`
-这些都是 GitLab 内置变量，流水线运行时会自动注入。
+`CI_REGISTRY`、`CI_REGISTRY_USER`、`CI_REGISTRY_PASSWORD`、`CI_REGISTRY_IMAGE`、`CI_COMMIT_SHORT_SHA` 均为 GitLab 内置变量，流水线运行时自动注入。
 
 需要确认的事项：
-1. **Docker Desktop** 已安装并处于 **Linux 容器模式**
-2. GitLab Runner 已注册为 **`docker` executor**
-3. **GitLab 项目已开启 Container Registry**（Settings → General → Visibility → Container Registry）
+1. **Docker Desktop** 已安装并处于 **Linux 容器模式**，且配置了镜像加速器（解决国内访问 Docker Hub 问题）
+2. GitLab Runner 已注册为 **`docker` executor**（不是 `shell` 或 `docker-windows`）
+3. **`ci-python:latest` 镜像已在宿主机构建好**（`docker build -f ci.Dockerfile -t ci-python .`）
+4. `node:20` 和 `docker:24` 基础镜像已提前拉取到本地（`docker pull node:20 && docker pull docker:24`）
 
 ---
 
 ## 演示视频里如何展示 CD
 
-1. 展示 GitLab 流水线页面，所有 stage 全部绿色 ✅
-2. 点进 `build_docker` job，展示日志输出（能看到 `docker push` 成功）
-3. 进入项目页面 → **Packages & Registries → Container Registry**
-   - 展示里面有 `backend` 和 `frontend` 两个镜像，每个都有对应的 tag（SHA + latest）
-
-这三步就足以说明 CD 流程完整跑通了。
+1. 本地构建 CI 镜像：`docker build -f ci.Dockerfile -t ci-python .`
+2. Push 代码到 `cd` 分支，展示流水线运行，所有 stage 绿色 ✅
+3. （main 分支）点进 `build_docker` job，展示 `docker push` 成功
+4. 对比日志：Python job 无需 `pip install`，直接执行测试
 
 ---
 
 ## 本地拉取镜像运行（可选演示）
 
-如果本机装了 Docker，可以直接拉镜像跑起来：
-
 ```bash
-# 先登录 GitLab Registry（替换为你们的 gitlab 地址和用户名）
-docker login registry.gitlab.com
-
-# 拉取镜像（替换为你们项目的实际 registry 地址，在 Container Registry 页面能看到）
-docker pull registry.gitlab.com/你的组/你的项目/backend:latest
-docker pull registry.gitlab.com/你的组/你的项目/frontend:latest
-
 # 用 docker-compose 一键启动（需先配置环境变量）
 # 编辑 .env 文件，填入 OPENAI_API_KEY 和 OPENAI_BASE_URL
 docker-compose up
@@ -142,11 +183,6 @@ docker-compose up
 
 ## 常见问题
 
-**Q: `build_docker` 需要 GitLab Runner 支持 Docker-in-Docker，我们的 Runner 支持吗？**
-
-已配置的 `docker` executor runner 支持 Docker-in-Docker（`build_docker` job 使用 `docker:24-dind` service）。
-GitLab 私服的 shared runner 通常也支持。如果报错说 `docker:dind` 服务无法启动，可以把 `build_docker` 的 `when` 改为 `when: manual`，这样不影响 CI 阶段的正常运行，演示时手动触发就行。
-
 **Q: Runner 报 403 Forbidden 怎么办？**
 
 说明 Runner 的注册 token 已失效或在 GitLab 上被删除。解决方法：
@@ -159,6 +195,17 @@ GitLab 私服的 shared runner 通常也支持。如果报错说 `docker:dind` �
 
 因为 CI 任务在 Linux Docker 容器中运行，shell 是 bash 而非 PowerShell。
 `$env:VAR = "value"` 是 PowerShell 语法，在 bash 中应使用 `export VAR="value"`。
+
+**Q: 拉取 Docker Hub 镜像失败（EOF / timeout）？**
+
+国内访问 Docker Hub 不稳定。解决方法：
+1. 在 Docker Desktop 设置中配置镜像加速器
+2. 提前手动 `docker pull` 所需镜像（`python:3.11`、`node:20`、`docker:24`）
+3. Runner 配置 `pull_policy = "if-not-present"` 优先使用本地镜像
+
+**Q: `build_docker` 是否需要 docker:dind？**
+
+不需要。宿主机 Docker socket 已通过 `volumes` 挂入 CI 容器，`docker:24` 客户端可直接与宿主机 Docker 引擎通信。
 
 **Q: 前端 Dockerfile 构建时 npm install 很慢怎么办？**
 
