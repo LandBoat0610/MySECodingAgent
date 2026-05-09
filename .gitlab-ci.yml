@@ -196,6 +196,7 @@ build_docker:
     - echo "镜像已推送到 GitLab Container Registry"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "cd"
   needs:
     - coverage_merge
     - vitest_frontend
