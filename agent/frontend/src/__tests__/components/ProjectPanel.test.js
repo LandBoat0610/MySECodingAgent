@@ -211,7 +211,9 @@ describe('ProjectPanel.vue', () => {
             const wrapper = mount(ProjectPanel)
             const sessionButtons = wrapper.findAll('.btn-icon')
             await sessionButtons[sessionButtons.length - 1].trigger('click')
+            await wrapper.vm.$nextTick()  // ← 等待 DOM 更新
             const input = wrapper.find('.new-session-form input')
+            expect(input.exists()).toBe(true)  // ← 添加检查
             await input.setValue('New Session')
             await wrapper.find('.new-session-form .btn-primary').trigger('click')
             expect(mockStore.doCreateSession).toHaveBeenCalledWith('New Session')

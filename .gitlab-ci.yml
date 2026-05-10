@@ -4,6 +4,7 @@ stages:
   - test
   - report
   - build
+  - deploy
 
 cache:
   key: "$CI_COMMIT_REF_SLUG"
@@ -195,7 +196,53 @@ build_docker:
     - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "cd"
+    - if: $CI_COMMIT_BRANCH == "cd2"
   needs:
     - coverage_merge
     - vitest_frontend
+
+# CD 部署阶段：本地直接部署（方案 A）
+deploy_local:
+  stage: deploy
+  image: docker:24
+  timeout: 10m
+  script:
+    - echo "🚀 开始本地部署..."
+    - echo "  停止旧容器..."
+    - docker-compose down || true
+    - echo "  启动新容器..."
+    - docker-compose up -d
+    - echo "⏳ 等待服务启动（最多 60 秒）..."
+    - |
+      for i in $(seq 1 12); do
+        echo "  第 ${i} 次检查..."
+        # 检查后端和前端容器是否都在运行
+        backend_running=$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null || echo "false")
+        frontend_running=$(docker inspect -f '{{.State.Running}}' agent-frontend 2>/dev/null || echo "false")
+        
+        if [ "$backend_running" = "true" ] && [ "$frontend_running" = "true" ]; then
+          echo "✅ 后端容器正在运行"
+          echo "✅ 前端容器正在运行"
+          echo "✅ 部署成功！服务已启动"
+          echo "  后端：http://localhost:8000"
+          echo "  前端：http://localhost:3000"
+          exit 0
+        fi
+        
+        if [ $i -eq 12 ]; then
+          echo "❌ 容器启动失败，查看日志："
+          docker logs agent-backend 2>/dev/null || echo "后端容器未启动"
+          docker logs agent-frontend 2>/dev/null || echo "前端容器未启动"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "cd2"
+  needs:
+    - build_docker
+  environment:
+    name: production
+    url: http://localhost:3000
