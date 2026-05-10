@@ -404,6 +404,7 @@ export const useAgentStore = defineStore('agent', () => {
     traceLogs.value = []
     finalAnswer.value = ''
     plans.value = []
+    stateSnapshot.value = null   // 清空旧快照，防止前端读到上一轮的 task_list / status
     currentRoundUserMsg.value = message
     agentRunStartedAt.value = null
     resetLivePerfForNewRun()

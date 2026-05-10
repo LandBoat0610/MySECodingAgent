@@ -433,12 +433,12 @@ function sortedTaskList(plans) {
     .map(p => p.content)
 }
 
-// ── 当前轮 taskList（过滤上一轮 plan ID） ────────────────
+// ── 当前轮 taskList（仅返回本轮新到的计划，不兜底旧快照）────
+// 新轮发送后 plans 为空，此处直接返回 []，让用户看到"等待 Agent 规划"
+// 待 Agent 生成新计划并 fetchPlans() 后，这里才会有数据
 const taskList = computed(() => {
   const active = store.plans.filter(p => !store.prevRoundPlanIds.has(p.id))
-  const items = sortedTaskList(active)
-  if (items.length > 0) return items
-  return store.stateSnapshot?.task_list || []
+  return sortedTaskList(active)
 })
 
 // ── 当前轮 displayTrace ───────────────────────────────────
