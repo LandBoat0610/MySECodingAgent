@@ -138,7 +138,7 @@ defineExpose({ setSelectedFile })
 .preview-code {
   margin: 0;
   flex: 1;
-  padding: 12px 16px;
+  padding: 12px 16px 72px;
   text-align: left;
   white-space: pre;
   overflow: auto;
