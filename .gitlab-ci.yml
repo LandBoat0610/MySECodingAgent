@@ -207,6 +207,8 @@ deploy_local:
   image: docker:24
   timeout: 10m
   script:
+    - echo "📦 安装 curl..."
+    - apk add --no-cache curl
     - echo "🚀 开始本地部署..."
     - echo "  停止旧容器..."
     - docker-compose down || true
