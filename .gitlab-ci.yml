@@ -14,7 +14,8 @@ variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   OPENAI_API_KEY: "test-key-for-ci"
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
-  IMAGE_NAME: "$CI_REGISTRY_IMAGE"
+  # 本地镜像名称（无 Container Registry，只用本地 tag）
+  IMAGE_NAME: "agent-platform"
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
   # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
   CI_TEST_IMAGE: "ci-python:latest"
@@ -180,20 +181,18 @@ coverage_merge:
     - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# CD 阶段：宿主机 Docker socket 已挂入，无需 dind 服务
+# CD 阶段：只构建镜像，不推送到 Registry（无 Container Registry）
 build_docker:
   stage: build
   image: docker:24
-  before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
+    - echo "开始构建后端镜像..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
-    - docker push "$IMAGE_NAME/backend:$IMAGE_TAG"
-    - docker push "$IMAGE_NAME/backend:latest"
-    - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
-    - docker push "$IMAGE_NAME/frontend:$IMAGE_TAG"
-    - docker push "$IMAGE_NAME/frontend:latest"
-    - echo "镜像已推送到 GitLab Container Registry"
+    - echo "✅ 后端镜像构建成功"
+    - echo "开始构建前端镜像..."
+    - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.Frontend agent/frontend/
+    - echo "✅ 前端镜像构建成功"
+    - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "cd"
