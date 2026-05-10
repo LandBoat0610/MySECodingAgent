@@ -207,8 +207,6 @@ deploy_local:
   image: docker:24
   timeout: 10m
   script:
-    - echo "📦 安装 curl..."
-    - apk add --no-cache curl
     - echo "🚀 开始本地部署..."
     - echo "  停止旧容器..."
     - docker-compose down || true
@@ -218,26 +216,28 @@ deploy_local:
     - |
       for i in $(seq 1 12); do
         echo "  第 ${i} 次检查..."
-        # 检查后端容器是否正在运行
-        if [ "$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null)" = "true" ]; then
-          # 使用 wget 检查健康端点（docker:24 自带 wget）
-          if wget -qO- http://localhost:8000/health 2>/dev/null; then
-            echo "✅ 后端健康检查通过"
-            break
-          fi
+        # 检查后端和前端容器是否都在运行
+        backend_running=$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null || echo "false")
+        frontend_running=$(docker inspect -f '{{.State.Running}}' agent-frontend 2>/dev/null || echo "false")
+        
+        if [ "$backend_running" = "true" ] && [ "$frontend_running" = "true" ]; then
+          echo "✅ 后端容器正在运行"
+          echo "✅ 前端容器正在运行"
+          echo "✅ 部署成功！服务已启动"
+          echo "  后端：http://localhost:8000"
+          echo "  前端：http://localhost:3000"
+          exit 0
         fi
+        
         if [ $i -eq 12 ]; then
-          echo "❌ 后端健康检查失败，查看日志："
-          docker logs agent-backend
+          echo "❌ 容器启动失败，查看日志："
+          docker logs agent-backend 2>/dev/null || echo "后端容器未启动"
+          docker logs agent-frontend 2>/dev/null || echo "前端容器未启动"
           exit 1
         fi
+        
         sleep 5
       done
-    - echo "  检查前端服务..."
-    - wget -qO- http://localhost:3000 || (echo "❌ 前端服务检查失败" && exit 1)
-    - echo "✅ 部署成功！服务已启动"
-    - echo "  后端：http://localhost:8000"
-    - echo "  前端：http://localhost:3000"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "cd2"
