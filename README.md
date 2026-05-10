@@ -322,8 +322,7 @@ $env:OPENAI_BASE_URL="https://api.openai.com/v1"   # 可选，若使用代理则
 export OPENAI_API_KEY="your-api-key-here"
 
 # 5. 启动后端服务
-cd agent
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+uvicorn agent.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 后端启动后访问 http://127.0.0.1:8000/docs 查看 Swagger API 文档。
