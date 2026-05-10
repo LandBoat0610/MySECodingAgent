@@ -4,6 +4,7 @@ stages:
   - test
   - report
   - build
+  - deploy
 
 cache:
   key: "$CI_COMMIT_REF_SLUG"
@@ -199,3 +200,32 @@ build_docker:
   needs:
     - coverage_merge
     - vitest_frontend
+
+# CD 部署阶段：本地直接部署（方案 A）
+deploy_local:
+  stage: deploy
+  image: docker:24
+  timeout: 10m
+  script:
+    - echo "🚀 开始本地部署..."
+    - echo "  停止旧容器..."
+    - docker-compose down || true
+    - echo "  启动新容器..."
+    - docker-compose up -d
+    - echo "⏳ 等待服务启动（30秒）..."
+    - sleep 30
+    - echo "  检查后端健康状态..."
+    - curl -f http://localhost:8000/health || (echo "❌ 后端健康检查失败" && exit 1)
+    - echo "  检查前端服务..."
+    - curl -f http://localhost:3000 || (echo "❌ 前端服务检查失败" && exit 1)
+    - echo "✅ 部署成功！服务已启动"
+    - echo "  后端：http://localhost:8000"
+    - echo "  前端：http://localhost:3000"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "cd2"
+  needs:
+    - build_docker
+  environment:
+    name: production
+    url: http://localhost:3000
