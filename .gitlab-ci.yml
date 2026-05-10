@@ -14,13 +14,10 @@ variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   OPENAI_API_KEY: "test-key-for-ci"
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
-  # 本地镜像名称（无 Container Registry，只用本地 tag）
   IMAGE_NAME: "agent-platform"
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
   # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
   CI_TEST_IMAGE: "ci-python:latest"
-  # 手动指定 Container Registry 地址（若项目未启用 Container Registry，GitLab 不会自动注入 $CI_REGISTRY）
-  CI_REGISTRY: "172.29.4.49:5050"
 
 # 1. 代码风格检查
 flake8_lint:
@@ -192,7 +189,7 @@ build_docker:
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
     - echo "✅ 后端镜像构建成功"
     - echo "开始构建前端镜像..."
-    - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.Frontend agent/frontend/
+    - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
     - echo "✅ 前端镜像构建成功"
     - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
   rules:
