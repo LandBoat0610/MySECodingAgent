@@ -19,6 +19,8 @@ variables:
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
   # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
   CI_TEST_IMAGE: "ci-python:latest"
+  # 手动指定 Container Registry 地址（若项目未启用 Container Registry，GitLab 不会自动注入 $CI_REGISTRY）
+  CI_REGISTRY: "172.29.4.49:5050"
 
 # 1. 代码风格检查
 flake8_lint:

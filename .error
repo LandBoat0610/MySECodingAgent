@@ -1,0 +1,53 @@
+2026-05-09T07:00:44.676961Z 00O Running with gitlab-runner 18.11.1 (5265d41d)
+2026-05-09T07:00:44.676961Z 00O   on ymm yhZu1sK8f, system ID: s_34480d4f5a50
+2026-05-09T07:00:44.676961Z 00O section_start:1778310044:prepare_executor
+2026-05-09T07:00:44.676961Z 00O+Preparing the "docker" executor
+2026-05-09T07:00:44.694350Z 00O Using Docker executor with image docker:24 ...
+2026-05-09T07:00:45.172074Z 00O Using effective pull policy of [if-not-present] for container docker:24
+2026-05-09T07:00:45.206404Z 00O Using locally found image version due to "if-not-present" pull policy
+2026-05-09T07:00:45.206404Z 00O Using docker image sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e for docker:24 with digest docker@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e ...
+2026-05-09T07:00:45.206404Z 00O section_end:1778310045:prepare_executor
+2026-05-09T07:00:45.206404Z 00O+section_start:1778310045:prepare_script
+2026-05-09T07:00:45.206404Z 00O+Preparing environment
+2026-05-09T07:00:45.219731Z 00O Using effective pull policy of [if-not-present] for container sha256:ac0f843d45047cc02cea2f6379f3c6f47aac077acc85bba0527ddc1e0b7773ba
+2026-05-09T07:00:45.533483Z 01O Running on runner-yhzu1sk8f-project-1513-concurrent-0 via LAPTOP-3Q7I35KD...
+2026-05-09T07:00:45.772346Z 00O section_end:1778310045:prepare_script
+2026-05-09T07:00:45.772346Z 00O+section_start:1778310045:get_sources
+2026-05-09T07:00:45.772346Z 00O+Getting source from Git repository
+2026-05-09T07:00:45.944243Z 01O Gitaly correlation ID: 01KR5RECAWVX0KEFRTXSMNM39W
+2026-05-09T07:00:45.947464Z 01O Fetching changes with git depth set to 20...
+2026-05-09T07:00:45.948521Z 01O Reinitialized existing Git repository in /builds/2026seiii-110/2-1/.git/
+2026-05-09T07:00:45.950190Z 01O Created fresh repository.
+2026-05-09T07:00:46.317408Z 01O Checking out c9ad8c67 as detached HEAD (ref is cd)...
+2026-05-09T07:00:46.320031Z 01O Removing .coverage
+2026-05-09T07:00:46.320031Z 01O Removing coverage.xml
+2026-05-09T07:00:46.343728Z 01O 
+2026-05-09T07:00:46.343728Z 01O Skipping Git submodules setup
+2026-05-09T07:00:46.583708Z 00O section_end:1778310046:get_sources
+2026-05-09T07:00:46.583708Z 00O+section_start:1778310046:restore_cache
+2026-05-09T07:00:46.584229Z 00O+Restoring cache
+2026-05-09T07:00:46.768910Z 01O Checking cache for cd-7-non_protected...
+2026-05-09T07:00:46.805681Z 01E No URL provided, cache will not be downloaded from shared cache server. Instead a local version of cache will be extracted. 
+2026-05-09T07:00:46.805681Z 01E WARNING: Cache file does not exist                 
+2026-05-09T07:00:46.807209Z 01O Failed to extract cache
+2026-05-09T07:00:47.063240Z 00O section_end:1778310047:restore_cache
+2026-05-09T07:00:47.063240Z 00O+section_start:1778310047:download_artifacts
+2026-05-09T07:00:47.063240Z 00O+Downloading artifacts
+2026-05-09T07:00:47.249872Z 01O Downloading artifacts for coverage_merge (69421)...
+2026-05-09T07:00:47.368595Z 01E Downloading artifacts from coordinator... ok        correlation_id=01KR5REFCXGCJV7NKDMTSB591R host=172.29.4.49 id=69421 responseStatus=200 OK token=64_sqZfux
+2026-05-09T07:00:47.372352Z 01O Downloading artifacts for vitest_frontend (69420)...
+2026-05-09T07:00:47.514000Z 01E Downloading artifacts from coordinator... ok        correlation_id=01KR5REFGN7DE8QDBH654K72GD host=172.29.4.49 id=69420 responseStatus=200 OK token=64_sqZfux
+2026-05-09T07:00:47.729903Z 00O section_end:1778310047:download_artifacts
+2026-05-09T07:00:47.729903Z 00O+section_start:1778310047:step_script
+2026-05-09T07:00:47.730444Z 00O+Executing "step_script" stage of the job script
+2026-05-09T07:00:47.730444Z 00O Using effective pull policy of [if-not-present] for container docker:24
+2026-05-09T07:00:47.771034Z 00O Using docker image sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e for docker:24 with digest docker@sha256:9b17a9f25adf17b88d0a013b4f00160754adf4b07ccbe9986664a49886c2c98e ...
+2026-05-09T07:00:48.133579Z 01O $ docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+2026-05-09T07:00:48.145783Z 01E WARNING! Using --password via the CLI is insecure. Use --password-stdin.
+2026-05-09T07:00:55.404161Z 01E Error response from daemon: Get "https://registry-1.docker.io/v2/": EOF
+2026-05-09T07:00:55.656861Z 00O section_end:1778310055:step_script
+2026-05-09T07:00:55.656861Z 00O+section_start:1778310055:cleanup_file_variables
+2026-05-09T07:00:55.657384Z 00O+Cleaning up project directory and file based variables
+2026-05-09T07:00:56.114882Z 00O section_end:1778310056:cleanup_file_variables
+2026-05-09T07:00:56.114882Z 00O+
+2026-05-09T07:00:56.132438Z 00O ERROR: Job failed: exit code 1
