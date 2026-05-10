@@ -13,6 +13,11 @@ export default defineConfig({
         setupFiles: ['./src/__tests__/setup.js'],
         // 测试文件匹配模式
         include: ['src/__tests__/**/*.test.{js,ts}'],
+        // 报告器：CI 环境输出 junit XML
+        reporters: process.env.CI
+            ? ['verbose', 'junit']
+            : ['verbose'],
+        outputFile: 'junit.xml',
         // 覆盖率配置
         coverage: {
             provider: 'v8',

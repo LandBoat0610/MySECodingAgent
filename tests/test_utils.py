@@ -168,3 +168,156 @@ class TestUtils:
         result = now_str()
         pattern = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"
         assert re.match(pattern, result), f"格式不匹配: {result}"
+
+
+# ==================== load_memory / save_memory ====================
+class TestMemoryFunctions:
+    def test_load_memory_file_not_exists(self, tmp_path, monkeypatch):
+        from agent.backend.utils import load_memory
+        monkeypatch.setattr("agent.backend.utils.MEMORY_FILE", str(tmp_path / "nonexistent.md"))
+        assert load_memory() == ""
+
+    def test_load_memory_file_with_content(self, tmp_path, monkeypatch):
+        from agent.backend.utils import load_memory
+        mem_file = tmp_path / "memory.md"
+        mem_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        monkeypatch.setattr("agent.backend.utils.MEMORY_FILE", str(mem_file))
+        content = load_memory()
+        assert "line1" in content
+
+    def test_save_and_load_memory(self, tmp_path, monkeypatch):
+        from agent.backend.utils import save_memory, load_memory
+        mem_file = tmp_path / "memory.md"
+        monkeypatch.setattr("agent.backend.utils.MEMORY_FILE", str(mem_file))
+        save_memory("task1", "result1")
+        content = load_memory()
+        assert "task1" in content
+        assert "result1" in content
+
+
+# ==================== _serialize_state ====================
+class TestSerializeState:
+    def test_removes_cancel_event(self):
+        from agent.backend.utils import _serialize_state
+        state = {"task": "hello", "_cancel_event": object(), "status": "ok"}
+        result = _serialize_state(state)
+        parsed = json.loads(result)
+        assert "task" in parsed
+        assert "status" in parsed
+        assert "_cancel_event" not in parsed
+
+
+# ==================== _state_outline_for_trace ====================
+class TestStateOutlineForTrace:
+    def test_none_input(self):
+        from agent.backend.utils import _state_outline_for_trace
+        assert _state_outline_for_trace(None) is None
+
+    def test_empty_dict(self):
+        from agent.backend.utils import _state_outline_for_trace
+        assert _state_outline_for_trace({}) is None
+
+    def test_filters_relevant_keys(self):
+        from agent.backend.utils import _state_outline_for_trace
+        state = {
+            "status": "running",
+            "current_task_index": 2,
+            "current_task": "step",
+            "target_file": "",
+            "run_command": None,
+            "reflections": 0,
+            "unrelated": "ignored"
+        }
+        outline = _state_outline_for_trace(state)
+        assert outline is not None
+        assert outline["status"] == "running"
+        assert outline["current_task_index"] == 2
+        assert "unrelated" not in outline
+
+    def test_includes_modified_files_tail(self):
+        from agent.backend.utils import _state_outline_for_trace
+        state = {"modified_files": ["a.py", "b.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py", "i.py"]}
+        outline = _state_outline_for_trace(state)
+        assert "modified_files_tail" in outline
+        assert len(outline["modified_files_tail"]) == 8
+
+
+# ==================== _trace_runtime_meta ====================
+class TestTraceRuntimeMeta:
+    def test_no_runtime_metrics(self):
+        from agent.backend.utils import _trace_runtime_meta
+        assert _trace_runtime_meta({}) == {}
+        assert _trace_runtime_meta(None) == {}
+
+    def test_extracts_token_total(self):
+        from agent.backend.utils import _trace_runtime_meta
+        state = {"runtime_metrics": {"tokens": {"total": 1234}}}
+        meta = _trace_runtime_meta(state)
+        assert meta["tokens_total"] == 1234
+
+    def test_extracts_tool_stats(self):
+        from agent.backend.utils import _trace_runtime_meta
+        state = {
+            "runtime_metrics": {
+                "tokens": {},
+                "tool_calls": [
+                    {"name": "read_file", "ok": True, "latency_ms": 100},
+                    {"name": "write_file", "ok": False, "latency_ms": 200},
+                ]
+            }
+        }
+        meta = _trace_runtime_meta(state)
+        assert meta["tool_events_count"] == 2
+        assert meta["tool_success_rate"] == pytest.approx(0.5)
+        assert meta["tool_avg_latency_ms"] == pytest.approx(150.0)
+
+
+# ==================== register / unregister callbacks ====================
+class TestCallbacks:
+    def test_register_and_unregister(self):
+        from agent.backend.utils import register_log_callback, unregister_log_callback, _LOG_CALLBACKS
+
+        calls = []
+        def cb(item):
+            calls.append(item)
+
+        register_log_callback(cb)
+        assert cb in _LOG_CALLBACKS
+
+        unregister_log_callback(cb)
+        assert cb not in _LOG_CALLBACKS
+
+    def test_unregister_nonexistent_no_error(self):
+        from agent.backend.utils import unregister_log_callback
+        def cb(x): pass
+        unregister_log_callback(cb)  # should not raise
+
+
+# ==================== save_trace ====================
+class TestSaveTrace:
+    def test_saves_json_and_mermaid(self, tmp_path, monkeypatch):
+        from agent.backend.utils import save_trace
+        json_path = tmp_path / "trace.json"
+        mmd_path = tmp_path / "trace.mmd"
+        monkeypatch.setattr("agent.backend.utils.TRACE_JSON", str(json_path))
+        monkeypatch.setattr("agent.backend.utils.TRACE_MERMAID", str(mmd_path))
+
+        trace = [
+            {"time": "2026-01-01 00:00:00", "phase": "planner", "content": "step1", "meta": {}},
+            {"time": "2026-01-01 00:00:01", "phase": "executor", "content": "step2", "meta": {}},
+        ]
+        save_trace(trace)
+
+        assert json_path.exists()
+        assert mmd_path.exists()
+
+        with open(json_path, encoding="utf-8") as f:
+            saved = json.load(f)
+        assert len(saved) == 2
+        assert saved[0]["phase"] == "planner"
+
+        with open(mmd_path, encoding="utf-8") as f:
+            mmd = f.read()
+        assert "flowchart TD" in mmd
+        assert "planner" in mmd
+        assert "executor" in mmd

@@ -205,4 +205,105 @@ describe('API layer', () => {
             expect(result).toEqual({ status: 'stopped', session_id: 'sess-1' })
         })
     })
+
+    // ============ Evaluation API ============
+    describe('uploadEvalDataset', () => {
+        it('should POST /eval/datasets/upload with FormData', async () => {
+            const file = new File(['{"items":[{"description":"t"}]}'], 'test.json', { type: 'application/json' })
+            axios.post.mockResolvedValue({ data: { id: 'ds1', name: 'Test', item_count: 1, created_at: 'now' } })
+            const result = await api.uploadEvalDataset(file, 'My Dataset')
+            expect(axios.post).toHaveBeenCalledWith('/eval/datasets/upload', expect.any(FormData), expect.any(Object))
+            expect(result).toEqual({ id: 'ds1', name: 'Test', item_count: 1, created_at: 'now' })
+        })
+
+        it('should upload without name', async () => {
+            const file = new File(['{"items":[{"description":"t"}]}'], 'test.json')
+            axios.post.mockResolvedValue({ data: { id: 'ds2', name: 'unnamed', item_count: 1, created_at: 'now' } })
+            await api.uploadEvalDataset(file)
+            expect(axios.post).toHaveBeenCalledWith('/eval/datasets/upload', expect.any(FormData), expect.any(Object))
+        })
+    })
+
+    describe('createEvalDatasetJson', () => {
+        it('should POST /eval/datasets with body', async () => {
+            const body = { name: 'DS', items: [{ description: 't' }] }
+            axios.post.mockResolvedValue({ data: { id: 'ds3', name: 'DS', item_count: 1, created_at: 'now' } })
+            const result = await api.createEvalDatasetJson(body)
+            expect(axios.post).toHaveBeenCalledWith('/eval/datasets', body, expect.any(Object))
+            expect(result.name).toBe('DS')
+        })
+    })
+
+    describe('listEvalDatasets', () => {
+        it('should call GET /eval/datasets', async () => {
+            axios.get.mockResolvedValue({ data: [{ id: 'ds1', name: 'DS1' }] })
+            const result = await api.listEvalDatasets()
+            expect(axios.get).toHaveBeenCalledWith('/eval/datasets')
+            expect(result).toHaveLength(1)
+        })
+    })
+
+    describe('deleteEvalDataset', () => {
+        it('should call DELETE /eval/datasets/:id', async () => {
+            axios.delete.mockResolvedValue({ data: { ok: true } })
+            const result = await api.deleteEvalDataset('ds1')
+            expect(axios.delete).toHaveBeenCalledWith('/eval/datasets/ds1', { params: {} })
+            expect(result).toEqual({ ok: true })
+        })
+    })
+
+    describe('createEvalTask', () => {
+        it('should POST /eval/tasks with body', async () => {
+            const body = { name: 'Task', dataset_id: 'ds1', eval_method: 'result' }
+            axios.post.mockResolvedValue({ data: { id: 't1', name: 'Task', status: 'pending' } })
+            const result = await api.createEvalTask(body)
+            expect(axios.post).toHaveBeenCalledWith('/eval/tasks', body)
+            expect(result.status).toBe('pending')
+        })
+    })
+
+    describe('listEvalTasks', () => {
+        it('should call GET /eval/tasks', async () => {
+            axios.get.mockResolvedValue({ data: [{ id: 't1', name: 'Task 1' }] })
+            const result = await api.listEvalTasks()
+            expect(axios.get).toHaveBeenCalledWith('/eval/tasks')
+            expect(result).toHaveLength(1)
+        })
+    })
+
+    describe('startEvalTask', () => {
+        it('should POST /eval/tasks/:id/start', async () => {
+            axios.post.mockResolvedValue({ data: { id: 't1', status: 'running' } })
+            const result = await api.startEvalTask('t1')
+            expect(axios.post).toHaveBeenCalledWith('/eval/tasks/t1/start')
+            expect(result.status).toBe('running')
+        })
+    })
+
+    describe('cancelEvalTask', () => {
+        it('should POST /eval/tasks/:id/cancel', async () => {
+            axios.post.mockResolvedValue({ data: { id: 't1', status: 'cancelling' } })
+            const result = await api.cancelEvalTask('t1')
+            expect(axios.post).toHaveBeenCalledWith('/eval/tasks/t1/cancel')
+            expect(result.status).toBe('cancelling')
+        })
+    })
+
+    describe('getEvalTaskResults', () => {
+        it('should GET /eval/tasks/:id/results', async () => {
+            axios.get.mockResolvedValue({ data: [{ id: 'r1', task_id: 't1', item_index: 0, status: 'completed' }] })
+            const result = await api.getEvalTaskResults('t1')
+            expect(axios.get).toHaveBeenCalledWith('/eval/tasks/t1/results')
+            expect(result).toHaveLength(1)
+        })
+    })
+
+    describe('deleteEvalTask', () => {
+        it('should DELETE /eval/tasks/:id', async () => {
+            axios.delete.mockResolvedValue({ data: { ok: true } })
+            const result = await api.deleteEvalTask('t1')
+            expect(axios.delete).toHaveBeenCalledWith('/eval/tasks/t1')
+            expect(result).toEqual({ ok: true })
+        })
+    })
 })

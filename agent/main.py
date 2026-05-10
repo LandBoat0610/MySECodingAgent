@@ -40,6 +40,11 @@ load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 app.include_router(eval_router)
 
+@app.get("/health")
+def health_check():
+    """健康检查端点 - 用于 Docker 健康检查和 CI/CD 部署验证"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 # ------------------ 平台 Agent 配置（IDE 与评测中心共用）------------------
 @app.get("/settings/agent-config", response_model=AgentConfigResponse)
 def read_agent_config():

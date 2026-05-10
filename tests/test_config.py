@@ -16,9 +16,14 @@ class TestConfig:
         assert isinstance(config.MODEL, str)
         assert len(config.MODEL) > 0
 
-    def test_model_uses_env_or_default(self):
+    def test_model_uses_env_or_default(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+        # Re-import to get the fresh value
+        import importlib
+        import agent.backend.config as cfg
+        importlib.reload(cfg)
         expected = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        assert config.MODEL == expected
+        assert cfg.MODEL == expected
 
     def test_memory_file_is_string(self):
         assert isinstance(config.MEMORY_FILE, str)
@@ -57,3 +62,46 @@ class TestConfig:
 
     def test_blocked_patterns_non_empty(self):
         assert len(config.BLOCKED_BASH_PATTERNS) > 0
+
+    # ---------- get_effective_model ----------
+    def test_get_effective_model_uses_env_default(self, monkeypatch):
+        """无覆盖、无平台设置时回退到 MODEL"""
+        from agent.backend.config import get_effective_model, _eval_model_override
+
+        # Reset eval model override
+        monkeypatch.setattr(
+            "agent.backend.config._eval_model_override",
+            type(_eval_model_override)("eval_model_override", default=None),
+        )
+        monkeypatch.setattr("agent.backend.config.MODEL", "gpt-4o-mini")
+        # Mock the platform_settings.get_agent_config which is lazily imported
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_agent_config",
+            lambda: {"model": "", "version_label": ""},
+        )
+        result = get_effective_model()
+        assert result == "gpt-4o-mini"
+
+    def test_eval_model_context_sets_and_resets(self):
+        from agent.backend.config import eval_model_context, _eval_model_override
+
+        assert _eval_model_override.get() is None
+        with eval_model_context("gpt-4-turbo"):
+            assert _eval_model_override.get() == "gpt-4-turbo"
+        assert _eval_model_override.get() is None
+
+    def test_eval_model_context_empty_string_is_noop(self):
+        from agent.backend.config import eval_model_context, _eval_model_override
+
+        assert _eval_model_override.get() is None
+        with eval_model_context(""):
+            assert _eval_model_override.get() is None
+        assert _eval_model_override.get() is None
+
+    def test_eval_model_context_none_is_noop(self):
+        from agent.backend.config import eval_model_context, _eval_model_override
+
+        assert _eval_model_override.get() is None
+        with eval_model_context(None):
+            assert _eval_model_override.get() is None
+        assert _eval_model_override.get() is None

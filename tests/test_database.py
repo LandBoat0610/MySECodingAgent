@@ -20,13 +20,18 @@ def temp_db_path(tmp_path, monkeypatch):
     return db_file
 
 def test_init_db_creates_tables(temp_db_path):
-    """验证 init_db 能成功创建四张表"""
+    """验证 init_db 能成功创建所有表（包含评测相关表）"""
     conn = sqlite3.connect(str(temp_db_path))
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     tables = [row[0] for row in cursor.fetchall()]
     conn.close()
-    assert tables == ["plan_actions", "plans", "projects", "sessions"]
+    expected = [
+        "eval_datasets", "eval_task_results", "eval_tasks",
+        "plan_actions", "plans", "platform_settings",
+        "projects", "sessions",
+    ]
+    assert tables == expected
 
 def test_projects_schema(temp_db_path):
     """校验 projects 表结构"""
@@ -60,6 +65,58 @@ def test_plan_actions_foreign_key(temp_db_path):
     conn.close()
     assert "FOREIGN KEY" in create_sql
     assert "REFERENCES plans" in create_sql
+
+
+def test_eval_datasets_schema(temp_db_path):
+    """校验 eval_datasets 表结构"""
+    conn = sqlite3.connect(str(temp_db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(eval_datasets)")
+    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    conn.close()
+    assert columns["id"] == "TEXT"
+    assert columns["name"] == "TEXT"
+    assert columns["created_at"] == "TEXT"
+    assert columns["item_count"] == "INTEGER"
+    assert columns["storage_path"] == "TEXT"
+
+
+def test_eval_tasks_schema(temp_db_path):
+    """校验 eval_tasks 表结构"""
+    conn = sqlite3.connect(str(temp_db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(eval_tasks)")
+    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    conn.close()
+    assert columns["id"] == "TEXT"
+    assert columns["name"] == "TEXT"
+    assert columns["dataset_id"] == "TEXT"
+    assert columns["eval_method"] == "TEXT"
+    assert columns["status"] == "TEXT"
+
+
+def test_eval_task_results_schema(temp_db_path):
+    """校验 eval_task_results 表结构"""
+    conn = sqlite3.connect(str(temp_db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(eval_task_results)")
+    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    conn.close()
+    assert columns["id"] == "TEXT"
+    assert columns["task_id"] == "TEXT"
+    assert columns["item_index"] == "INTEGER"
+    assert columns["status"] == "TEXT"
+
+
+def test_platform_settings_schema(temp_db_path):
+    """校验 platform_settings 表结构"""
+    conn = sqlite3.connect(str(temp_db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(platform_settings)")
+    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    conn.close()
+    assert columns["key"] == "TEXT"
+    assert columns["value"] == "TEXT"
 
 def test_get_connection_commit(temp_db_path):
     """验证 get_connection 在正常退出时能成功提交数据"""

@@ -3,6 +3,8 @@ stages:
   - security
   - test
   - report
+  - build
+  - deploy
 
 cache:
   key: "$CI_COMMIT_REF_SLUG"
@@ -13,13 +15,16 @@ variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   OPENAI_API_KEY: "test-key-for-ci"
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
+  IMAGE_NAME: "agent-platform"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
+  CI_TEST_IMAGE: "ci-python:latest"
 
 # 1. 代码风格检查
 flake8_lint:
   stage: lint
-  image: python:3.11
+  image: ${CI_TEST_IMAGE}
   script:
-    - pip install flake8
     - python -m flake8 agent/ tests/ --max-line-length=120
   allow_failure: true
   needs: []
@@ -27,27 +32,29 @@ flake8_lint:
 # 2. 安全扫描
 bandit_scan:
   stage: security
-  image: python:3.11
+  image: ${CI_TEST_IMAGE}
   script:
-    - pip install bandit
     - python -m bandit -r agent/ -ll || echo "Bandit scan skipped"
   allow_failure: true
   needs: []
 
-# 3. 单元测试（公共基类）
+# ============================================================
+# 3. 单元测试 — 使用自定义镜像，不再重复安装依赖
+# ============================================================
 .test_base:
-  image: python:3.11
+  # 👇 关键修改：使用我们构建的自定义镜像
+  image: $CI_TEST_IMAGE
+  # ❌ 删除 before_script 中的 pip install 命令（依赖已在镜像中）
   before_script:
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
-    - pip install pytest pytest-cov
+    # 可选：如果有额外需要在运行时安装的包（例如某个测试需要的临时工具），可以保留，但一般不需要
+    - echo "Using prebuilt CI image with all dependencies."
 
 pytest_backend:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.backend"
-    - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py
+    - export COVERAGE_FILE=".coverage.backend"
+    - python -m pytest tests/test_database.py tests/test_schemas.py tests/test_state.py tests/test_utils.py tests/test_config.py tests/test_platform_settings.py tests/test_eval_storage.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.backend.xml
   artifacts:
@@ -63,7 +70,7 @@ pytest_tools:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.tools"
+    - export COVERAGE_FILE=".coverage.tools"
     - python -m pytest tests/test_tools.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.tools.xml
@@ -80,7 +87,7 @@ pytest_llm:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.llm"
+    - export COVERAGE_FILE=".coverage.llm"
     - python -m pytest tests/test_llm.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.llm.xml
@@ -97,7 +104,7 @@ pytest_graph_and_main:
   extends: .test_base
   stage: test
   script:
-    - $env:COVERAGE_FILE = ".coverage.graph_main"
+    - export COVERAGE_FILE=".coverage.graph_main"
     - python -m pytest tests/test_graph.py tests/test_main.py
       --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
       --junitxml=junit.graph_main.xml
@@ -110,7 +117,24 @@ pytest_graph_and_main:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# 4. 前端单元测试
+pytest_eval:
+  extends: .test_base
+  stage: test
+  script:
+    - export COVERAGE_FILE=".coverage.eval"
+    - python -m pytest tests/test_eval_dataset.py tests/test_eval_scoring.py tests/test_eval_security.py tests/test_runtime_metrics.py tests/test_eval_quality.py tests/test_evaluation_jobs.py
+      --cov=agent/ --cov-report=term --cov-report=xml:coverage.xml
+      --junitxml=junit.eval.xml
+  artifacts:
+    paths:
+      - .coverage.eval
+      - coverage.xml
+    reports:
+      junit: junit.eval.xml
+    expire_in: 1 day
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+# 4. 前端单元测试（保持不变，因为它用的是 node 镜像）
 vitest_frontend:
   stage: test
   image: node:20
@@ -118,10 +142,11 @@ vitest_frontend:
     - cd agent/frontend
     - npm install
   script:
-    - npx vitest run --coverage
+    - npx vitest run --coverage --reporter=verbose --reporter=junit --outputFile=junit.xml
   artifacts:
     paths:
       - agent/frontend/coverage/
+      - agent/frontend/junit.xml
     reports:
       coverage_report:
         coverage_format: cobertura
@@ -134,11 +159,11 @@ vitest_frontend:
 # 5. 合并覆盖率
 coverage_merge:
   stage: report
-  image: python:3.11
+  image: ${CI_TEST_IMAGE}
   before_script:
-    - pip install coverage
+    - echo "使用预装依赖的 CI 镜像"
   script:
-    - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main
+    - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main .coverage.eval
     - python -m coverage report -m
     - python -m coverage xml -o coverage.xml
   artifacts:
@@ -153,4 +178,71 @@ coverage_merge:
     - pytest_tools
     - pytest_llm
     - pytest_graph_and_main
+    - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
+
+# CD 阶段：只构建镜像，不推送到 Registry（无 Container Registry）
+build_docker:
+  stage: build
+  image: docker:24
+  timeout: 1h  # 增加超时时间到 1 小时
+  script:
+    - echo "开始构建后端镜像..."
+    - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
+    - echo "✅ 后端镜像构建成功"
+    - echo "开始构建前端镜像..."
+    - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
+    - echo "✅ 前端镜像构建成功"
+    - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "cd2"
+  needs:
+    - coverage_merge
+    - vitest_frontend
+
+# CD 部署阶段：本地直接部署（方案 A）
+deploy_local:
+  stage: deploy
+  image: docker:24
+  timeout: 10m
+  script:
+    - echo "🚀 开始本地部署..."
+    - echo "  停止旧容器..."
+    - docker-compose down || true
+    - echo "  启动新容器..."
+    - docker-compose up -d
+    - echo "⏳ 等待服务启动（最多 60 秒）..."
+    - |
+      for i in $(seq 1 12); do
+        echo "  第 ${i} 次检查..."
+        # 检查后端和前端容器是否都在运行
+        backend_running=$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null || echo "false")
+        frontend_running=$(docker inspect -f '{{.State.Running}}' agent-frontend 2>/dev/null || echo "false")
+        
+        if [ "$backend_running" = "true" ] && [ "$frontend_running" = "true" ]; then
+          echo "✅ 后端容器正在运行"
+          echo "✅ 前端容器正在运行"
+          echo "✅ 部署成功！服务已启动"
+          echo "  后端：http://localhost:8000"
+          echo "  前端：http://localhost:3000"
+          exit 0
+        fi
+        
+        if [ $i -eq 12 ]; then
+          echo "❌ 容器启动失败，查看日志："
+          docker logs agent-backend 2>/dev/null || echo "后端容器未启动"
+          docker logs agent-frontend 2>/dev/null || echo "前端容器未启动"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "cd2"
+  needs:
+    - build_docker
+  environment:
+    name: production
+    url: http://localhost:3000
