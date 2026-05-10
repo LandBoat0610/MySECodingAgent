@@ -218,7 +218,7 @@ deploy_local:
     - |
       for i in $(seq 1 12); do
         echo "  第 ${i} 次检查..."
-        if curl -f http://localhost:8000/health 2>/dev/null; then
+        if docker exec agent-backend curl -f http://localhost:8000/health 2>/dev/null; then
           echo "✅ 后端健康检查通过"
           break
         fi
@@ -230,7 +230,7 @@ deploy_local:
         sleep 5
       done
     - echo "  检查前端服务..."
-    - curl -f http://localhost:3000 || (echo "❌ 前端服务检查失败" && exit 1)
+    - docker exec agent-frontend curl -f http://localhost:3000 || (echo "❌ 前端服务检查失败" && exit 1)
     - echo "✅ 部署成功！服务已启动"
     - echo "  后端：http://localhost:8000"
     - echo "  前端：http://localhost:3000"
