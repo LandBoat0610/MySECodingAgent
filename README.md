@@ -560,7 +560,6 @@ docker build -f ci.Dockerfile -t ci-python .
 
 ## 12. 已知限制与未来计划
 
-- [ ] 文件预览功能 API 尚未实现（当前为占位 UI）
 - [ ] 仅支持 OpenAI 兼容 API，暂未接入其他 LLM 提供商
 - [ ] Web 搜索基于 DuckDuckGo HTML 解析，稳定性有限
 - [ ] 无用户认证/授权机制
