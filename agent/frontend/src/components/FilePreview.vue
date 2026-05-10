@@ -9,7 +9,7 @@
         <span class="placeholder-icon">📄</span>
         <span class="placeholder-text">Select a file from the file tree to preview</span>
       </div>
-      <div v-else-if="fileLoading" class="preview-placeholder">
+      <div v-else-if="store.fileLoading" class="preview-placeholder">
         <span class="placeholder-text">Loading...</span>
       </div>
       <div v-else-if="store.error && !store.fileContent" class="preview-placeholder">
@@ -25,7 +25,12 @@
 import { useAgentStore } from '../stores/agent.js'
 
 const store = useAgentStore()
-const fileLoading = store.fileLoading
+
+async function setSelectedFile(node) {
+  await store.fetchFileContent(node.path)
+}
+
+defineExpose({ setSelectedFile })
 </script>
 
 <style scoped>
