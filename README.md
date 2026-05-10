@@ -227,9 +227,10 @@ Agent Platform 是一个全栈项目（Python 后端 + Vue 前端），核心能
 │   └── api文档.md
 ├── evaluation-platform/            # 评测平台相关（预留）
 ├── requirements.txt                # Python 依赖
-├── Dockerfile                      # Docker 构建文件
+├── Dockerfile                      # 后端部署镜像构建文件
+├── ci.Dockerfile                   # CI 专用镜像（预装全部依赖 + 测试工具）
+├── docker-compose.yml              # 前后端本地联调编排
 ├── conftest.py                     # pytest 全局配置
-├── agent_memory.md                 # 代理记忆文件（运行时自动生成）
 └── README.md                       # 本文件
 ```
 
@@ -344,17 +345,19 @@ npm run dev
 
 > **说明**：Vite dev server 已配置代理，`/projects` 开头的请求会自动转发到 `http://127.0.0.1:8000`。
 
-### 7.4 使用 Docker 启动（仅后端）
+### 7.4 使用 Docker Compose 启动（前后端一键部署）
 
 ```bash
-# 构建镜像
-docker build -t agent-platform .
+# 配置环境变量（创建 .env 文件）
+echo OPENAI_API_KEY=your-key-here > .env
+echo OPENAI_BASE_URL=https://api.openai.com/v1 >> .env
 
-# 运行容器
-docker run -p 8000:8000 \
-  -e OPENAI_API_KEY="your-api-key-here" \
-  -e OPENAI_BASE_URL="https://api.openai.com/v1" \
-  agent-platform
+# 启动
+docker-compose up
+
+# 访问
+# 前端: http://localhost:3000
+# 后端 API 文档: http://localhost:8000/docs
 ```
 
 ### 7.5 完整使用流程
@@ -389,7 +392,7 @@ pytest tests/test_eval_dataset.py -v
 pytest tests/test_runtime_metrics.py -v
 
 # 带覆盖率报告
-pytest tests/ -v --cov=agent/backend --cov-report=term-missing
+pytest tests/ -v --cov=agent/ --cov-report=term-missing
 ```
 
 ### 8.2 前端测试
@@ -498,7 +501,43 @@ npm run test -- --coverage
 
 ---
 
-## 10. 技术栈
+## 10. CI/CD 流水线
+
+本项目使用 GitLab CI/CD，配置见 `.gitlab-ci.yml`，共 5 个阶段：
+
+```
+lint → security → test → report → build
+```
+
+| 阶段     | Job                                                | 说明                                                              |
+| -------- | -------------------------------------------------- | ----------------------------------------------------------------- |
+| lint     | `flake8_lint`                                      | Python 代码风格检查                                               |
+| security | `bandit_scan`                                      | 安全漏洞扫描                                                      |
+| test     | `pytest_backend / tools / llm / graph_main / eval` | 后端单元测试 + 覆盖率                                             |
+| test     | `vitest_frontend`                                  | 前端单元测试                                                      |
+| report   | `coverage_merge`                                   | 合并覆盖率报告                                                    |
+| build    | `build_docker`                                     | 构建 Docker 镜像 → 推送 GitLab Container Registry（仅 main 分支） |
+
+### 自定义 CI 镜像
+
+为加速流水线，所有 Python job 使用预装全部依赖的自定义镜像 `ci-python:latest`（由 `ci.Dockerfile` 构建），跳过每次 `pip install`。
+
+```bash
+# 构建 CI 镜像（依赖变更后需重新执行一次）
+docker build -f ci.Dockerfile -t ci-python .
+```
+
+镜像预装内容：`requirements.txt` 全部依赖 + pytest / pytest-cov / flake8 / bandit / coverage。
+
+### Runner 要求
+
+- **Executor**：`docker`（Linux 容器模式）
+- **宿主机配置**：挂载 `/var/run/docker.sock` + `privileged = true` + `pull_policy = "if-not-present"`
+- 详见 [docs/CD部署配置说明.md](docs/CD部署配置说明.md)
+
+---
+
+## 11. 技术栈
 
 | 层级        | 技术                                                    |
 | ----------- | ------------------------------------------------------- |
@@ -520,7 +559,7 @@ npm run test -- --coverage
 
 ---
 
-## 11. 已知限制与未来计划
+## 12. 已知限制与未来计划
 
 - [ ] 文件预览功能 API 尚未实现（当前为占位 UI）
 - [ ] 仅支持 OpenAI 兼容 API，暂未接入其他 LLM 提供商

@@ -1,0 +1,63 @@
+version: "3.9"
+
+# ================================================================
+# Agent Platform - 本地开发 & 生产部署均可使用
+# 用法：
+#   开发模式：docker-compose up
+#   生产拉取镜像：IMAGE_NAME=registry.gitlab.com/你的组/项目 docker-compose up
+# ================================================================
+
+services:
+  # 后端服务 (FastAPI + Uvicorn)
+  backend:
+    image: ${IMAGE_NAME:-agent-platform}/backend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # 持久化 SQLite 数据库和工作区文件
+      - agent_data:/app/data
+      - agent_workspaces:/app/workspaces
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # 前端服务 (Vue 3 + Vite → nginx 静态托管)
+  frontend:
+    image: ${IMAGE_NAME:-agent-platform}/frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./agent/frontend
+      dockerfile: Dockerfile.frontend
+    container_name: agent-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - agent-net
+
+volumes:
+  agent_data:
+    driver: local
+  agent_workspaces:
+    driver: local
+
+networks:
+  agent-net:
+    driver: bridge
