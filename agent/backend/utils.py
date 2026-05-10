@@ -158,18 +158,21 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
         print(f"Error updating session state: {e}")
 
 import threading
+from typing import Callable
 
-_LOG_CALLBACKS = []
+# 以 session_id 为 key，每个会话最多只有一个活跃回调
+# 避免 WebSocket 重连导致回调重复积累（重连 N 次 → N 倍日志的问题）
+_LOG_CALLBACKS: Dict[str, Callable] = {}
 _LOG_CALLBACKS_LOCK = threading.Lock()
 
-def register_log_callback(callback):
+def register_log_callback(callback, session_id: str = "__global__"):
     with _LOG_CALLBACKS_LOCK:
-        _LOG_CALLBACKS.append(callback)
+        _LOG_CALLBACKS[session_id] = callback
 
-def unregister_log_callback(callback):
+def unregister_log_callback(callback, session_id: str = "__global__"):
     with _LOG_CALLBACKS_LOCK:
-        if callback in _LOG_CALLBACKS:
-            _LOG_CALLBACKS.remove(callback)
+        if _LOG_CALLBACKS.get(session_id) is callback:
+            del _LOG_CALLBACKS[session_id]
 
 def _state_outline_for_trace(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not state or not isinstance(state, dict):
@@ -228,15 +231,16 @@ def log_state(trace: List[Dict[str, Any]], phase: str, content: str, meta: Optio
         update_session_state(session_id, state)
         
     # 调用所有注册的回调（用于 WebSocket 实时推送）
+    # 每个 session_id 最多一个回调，避免重连积累导致重复推送
     with _LOG_CALLBACKS_LOCK:
-        callbacks_snapshot = list(_LOG_CALLBACKS)
-    for cb in callbacks_snapshot:
+        callbacks_snapshot = list(_LOG_CALLBACKS.items())
+    for sid_key, cb in callbacks_snapshot:
         try:
             cb(item)
         except Exception:
             with _LOG_CALLBACKS_LOCK:
-                if cb in _LOG_CALLBACKS:
-                    _LOG_CALLBACKS.remove(cb)
+                if _LOG_CALLBACKS.get(sid_key) is cb:
+                    del _LOG_CALLBACKS[sid_key]
 
 def save_trace(trace: List[Dict[str, Any]]) -> None:
     with open(TRACE_JSON, "w", encoding="utf-8") as f:

@@ -362,7 +362,6 @@ def get_or_create_agent_runner(sid: str) -> AgentRunner:
         _agent_runners[sid] = AgentRunner(sid)
     return _agent_runners[sid]
 
-from agent.backend.utils import _LOG_CALLBACKS_LOCK
 
 @app.websocket("/projects/{project_id}/sessions/{sid}/chat/stream")
 async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
@@ -399,9 +398,9 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
     def on_log(item):
         runner.send_to_ws({"type": "trace", "data": item})
 
-    from agent.backend.utils import _LOG_CALLBACKS
-    with _LOG_CALLBACKS_LOCK:
-        _LOG_CALLBACKS.append(on_log)
+    # 以 sid 为 key 注册，自动替换同会话的旧回调，消除重连后重复推送
+    from agent.backend.utils import register_log_callback
+    register_log_callback(on_log, session_id=sid)
 
     if need_start:
         runner.start(state)
@@ -435,10 +434,8 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
         except Exception:
             pass
     finally:
-        from agent.backend.utils import _LOG_CALLBACKS as cb_list
-        with _LOG_CALLBACKS_LOCK:
-            if on_log in cb_list:
-                cb_list.remove(on_log)
+        from agent.backend.utils import unregister_log_callback
+        unregister_log_callback(on_log, session_id=sid)
         runner.clear_ws_if_same(websocket)
         try:
             await websocket.close()
@@ -457,7 +454,7 @@ def get_plan(project_id: str, sid: str):
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
 
         plans = conn.execute(
-            "SELECT * FROM plans WHERE session_id = ? ORDER BY created_at DESC",
+            "SELECT *, rowid FROM plans WHERE session_id = ? ORDER BY rowid ASC",
             (sid,),
         ).fetchall()
 

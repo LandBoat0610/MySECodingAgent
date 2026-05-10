@@ -1,52 +1,54 @@
 <template>
   <div class="plan-dialog">
     <div class="plan-dialog-header">
-      <span>📋 Execution Plan</span>
-      <span class="plan-count">{{ store.pendingPlans.length }} step(s) pending</span>
+      <span>📋 执行计划</span>
+      <span class="plan-count">共 {{ store.pendingPlans.length }} 步待确认</span>
     </div>
     <div class="plan-list">
       <div
-        v-for="plan in store.pendingPlans"
+        v-for="(plan, idx) in store.pendingPlans"
         :key="plan.id"
         class="plan-item"
       >
-        <div class="plan-item-content">{{ plan.content }}</div>
-        <div class="plan-item-meta">
-          <span>{{ formatDate(plan.created_at) }}</span>
-          <span :class="['plan-status', plan.status]">{{ plan.status }}</span>
+        <span class="plan-num">{{ idx + 1 }}</span>
+        <div class="plan-item-body">
+          <div class="plan-item-content">{{ plan.content }}</div>
+          <div class="plan-item-meta">
+            <span>{{ formatDate(plan.created_at) }}</span>
+          </div>
         </div>
       </div>
     </div>
     <div class="plan-dialog-footer">
-      <span class="plan-prompt">How would you like to proceed?</span>
+      <span class="plan-prompt">请确认是否按此计划执行：</span>
       <div class="plan-actions">
         <button
           class="btn btn-agree"
           @click="handleAction('agree')"
           :disabled="actionLoading"
         >
-          ✅ Agree
+          ✅ 同意执行
         </button>
         <button
           class="btn btn-refine"
           @click="handleAction('refine')"
           :disabled="actionLoading"
         >
-          🔄 Refine
+          🔄 重新规划
         </button>
         <button
           class="btn btn-skip"
           @click="handleAction('skip')"
           :disabled="actionLoading"
         >
-          ⏭ Skip
+          ⏭ 跳过计划
         </button>
         <button
           class="btn btn-stop"
           @click="handleAction('stop')"
           :disabled="actionLoading"
         >
-          ⏹ Stop
+          ⏹ 终止
         </button>
       </div>
     </div>
@@ -66,8 +68,9 @@ async function handleAction(action) {
   const plan = store.pendingPlans[0]
   try {
     await store.doPlanAction(plan.id, action)
+    // 只刷新计划列表；执行过程由 WebSocket 实时推送，不调 restoreSessionState
+    // 避免快照覆盖实时轨迹导致内容突变或重复
     await store.fetchPlans()
-    await store.restoreSessionState()
   } catch (e) {
     // error handled in store
   } finally {
@@ -117,10 +120,30 @@ function formatDate(iso) {
 }
 
 .plan-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
   padding: 8px 10px;
   background: var(--bg-tertiary);
   border-radius: 6px;
 }
+
+.plan-num {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--info);
+  background: rgba(137, 220, 235, 0.15);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.plan-item-body { flex: 1; min-width: 0; }
 
 .plan-item-content {
   font-size: 13px;
@@ -130,20 +153,10 @@ function formatDate(iso) {
 .plan-item-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   margin-top: 4px;
   font-size: 11px;
   color: var(--text-muted);
 }
-
-.plan-status {
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.plan-status.pending { background: rgba(137, 220, 235, 0.2); color: var(--info); }
 
 .plan-dialog-footer {
   padding: 10px 14px;

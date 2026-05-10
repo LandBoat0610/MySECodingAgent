@@ -56,13 +56,20 @@ def create_plan(
     trace: List[Dict[str, Any]],
     state: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    log_state(trace, "plan", f"Creating plan for task: {task}")
+    log_state(trace, "plan", f"正在为任务制定执行计划: {task}")
     try:
-        data = llm_json(
-            "You are a planner for an autonomous agent. Break the task into 3-6 concrete executable steps. Return JSON object with key 'steps'.",
-            f"Task:\n{task}\n\nMemory:\n{memory}",
-            state,
+        prompts_config = load_prompts()
+        planner_config = prompts_config.get("planner_prompt", {})
+        system_prompt = planner_config.get(
+            "system",
+            "你是一个自动智能体的任务规划器。请务必返回 JSON 格式，包含 'steps' 数组字段。",
         )
+        template = planner_config.get("template", "用户任务:\n{user_task}")
+        user_prompt = template.format(user_task=task)
+        if memory:
+            user_prompt += f"\n\n过往记忆:\n{memory}"
+
+        data = llm_json(system_prompt, user_prompt, state)
         steps = data.get("steps", [])
         if not isinstance(steps, list) or not steps:
             return [task]
