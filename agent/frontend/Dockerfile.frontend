@@ -5,7 +5,8 @@ WORKDIR /app
 
 # 先复制 package.json 利用缓存
 COPY package.json package-lock.json* ./
-RUN npm install
+# 使用淘宝镜像源加速 npm 安装
+RUN npm config set registry https://registry.npmmirror.com && npm install
 
 # 复制源码并构建
 COPY . .

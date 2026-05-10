@@ -184,6 +184,7 @@ coverage_merge:
 build_docker:
   stage: build
   image: docker:24
+  timeout: 1h  # 增加超时时间到 1 小时
   script:
     - echo "开始构建后端镜像..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
