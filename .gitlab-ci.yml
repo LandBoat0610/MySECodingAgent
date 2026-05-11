@@ -193,8 +193,7 @@ build_docker:
     - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
-    - if: $CI_COMMIT_BRANCH == "cd2"
-    - if: $CI_COMMIT_BRANCH == "feat1"
+   
   needs:
     - coverage_merge
     - vitest_frontend
@@ -237,9 +236,8 @@ deploy_local:
         sleep 5
       done
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "cd2"
-    - if: $CI_COMMIT_BRANCH == "feat1"
+    - if: $CI_COMMIT_BRANCH == "master"
+
   needs:
     - build_docker
   environment:
