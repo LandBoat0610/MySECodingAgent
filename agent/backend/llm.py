@@ -12,6 +12,7 @@ client = OpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL")
 )
 
+
 def llm_json(system_prompt: str, user_prompt: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     response = client.chat.completions.create(
         model=get_effective_model(),
@@ -43,7 +44,7 @@ principles:
 {principles}
 Constraints:
 {constraints}
-Workspace: 
+Workspace:
 {workspace_dir}
 Memory:
 {memory}
@@ -88,26 +89,30 @@ def infer_coding_targets(
     state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     log_state(trace, "infer_targets", "Using LLM to infer target file and run command...")
-    
+
     # 从 YAML 配置文件中加载提示词
     try:
         prompts_config = load_prompts()
         infer_config = prompts_config.get("infer_targets_prompt", {})
-        
+
         system_prompt = infer_config.get(
-            "system", 
-            "You are an expert coding environment configurator. Return ONLY a JSON object with keys 'target_file' and 'run_command'."
+            "system",
+            "You are an expert coding environment configurator. "
+            "Return ONLY a JSON object with keys 'target_file' and 'run_command'."
         )
         template = infer_config.get(
-            "template", 
+            "template",
             "Task:\n{user_task}"
         )
         user_prompt = template.format(user_task=task)
     except Exception as e:
         log_state(trace, "infer_targets_prompt_error", f"Failed to load prompt: {e}")
-        system_prompt = "You are an expert coding environment configurator. Return ONLY a JSON object with keys 'target_file' and 'run_command'."
+        system_prompt = (
+            "You are an expert coding environment configurator. "
+            "Return ONLY a JSON object with keys 'target_file' and 'run_command'."
+        )
         user_prompt = f"Task:\n{task}"
-    
+
     # 2. 调用大模型进行智能推断
     try:
         data = llm_json(system_prompt, user_prompt, state)

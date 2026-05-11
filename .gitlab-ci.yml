@@ -17,15 +17,21 @@ variables:
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
   IMAGE_NAME: "agent-platform"
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
-  # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
-  CI_TEST_IMAGE: "ci-python:latest"
+  # 使用公开 Python 镜像，避免依赖 Runner 宿主机上预先构建的本地 ci-python 镜像。
+  CI_TEST_IMAGE: "python:3.11-slim"
+
+.python_ci:
+  image:
+    name: $CI_TEST_IMAGE
+    pull_policy: if-not-present
+  before_script:
+    - python -m pip install --upgrade pip
+    - python -m pip install -r requirements.txt pytest pytest-cov python-multipart flake8 bandit coverage
 
 # 1. 代码风格检查
 flake8_lint:
+  extends: .python_ci
   stage: lint
-  image:
-    name: ${CI_TEST_IMAGE}
-    pull_policy: if-not-present
   script:
     - python -m flake8 agent/ tests/ --max-line-length=120
   allow_failure: true
@@ -33,26 +39,18 @@ flake8_lint:
 
 # 2. 安全扫描
 bandit_scan:
+  extends: .python_ci
   stage: security
-  image:
-    name: ${CI_TEST_IMAGE}
-    pull_policy: if-not-present
   script:
     - python -m bandit -r agent/ -ll || echo "Bandit scan skipped"
   allow_failure: true
   needs: []
 
 # ============================================================
-# 3. 单元测试 — 使用自定义镜像，不再重复安装依赖
+# 3. 单元测试
 # ============================================================
 .test_base:
-  # ci-python:latest 是本地构建的镜像，pull_policy 设为 if-not-present
-  # 避免 Runner 尝试从远程仓库拉取而失败
-  image:
-    name: $CI_TEST_IMAGE
-    pull_policy: if-not-present
-  before_script:
-    - echo "Using prebuilt CI image with all dependencies."
+  extends: .python_ci
 
 pytest_backend:
   extends: .test_base
@@ -163,12 +161,8 @@ vitest_frontend:
 
 # 5. 合并覆盖率
 coverage_merge:
+  extends: .python_ci
   stage: report
-  image:
-    name: ${CI_TEST_IMAGE}
-    pull_policy: if-not-present
-  before_script:
-    - echo "使用预装依赖的 CI 镜像"
   script:
     - python -m coverage combine .coverage.backend .coverage.tools .coverage.llm .coverage.graph_main .coverage.eval
     - python -m coverage report -m

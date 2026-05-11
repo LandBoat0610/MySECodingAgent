@@ -81,13 +81,16 @@ tools = [
     }
 ]
 
+
 def parse_tool_arguments(raw_arguments: str) -> Dict[str, Any]:
-    if not raw_arguments: return {}
+    if not raw_arguments:
+        return {}
     try:
         parsed = json.loads(raw_arguments)
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError as error:
         return {"_argument_error": f"Invalid JSON arguments: {error}"}
+
 
 def execute_bash(command: str) -> str:
     try:
@@ -97,16 +100,16 @@ def execute_bash(command: str) -> str:
                 return tool_result("error", f"Blocked potentially dangerous command: {command}")
 
         result = subprocess.run(
-            command, 
-            shell=True, 
-            cwd=workspace_dir, 
-            capture_output=True, 
-            text=True, 
+            command,
+            shell=True,
+            cwd=workspace_dir,
+            capture_output=True,
+            text=True,
             encoding="utf-8",
             errors="replace",
             timeout=20,
             executable=os.environ.get("COMSPEC", None),
-            )
+        )
         combined = f"STDOUT:\n{safe_trim(result.stdout)}\n\nSTDERR:\n{safe_trim(result.stderr)}"
         return tool_result(
             "success" if result.returncode == 0 else "error",
@@ -120,6 +123,7 @@ def execute_bash(command: str) -> str:
     except Exception as e:
         return tool_result("error", str(e), path=CURRENT_WORKSPACE_DIR)
 
+
 def read_file(path: str) -> str:
     try:
         if os.path.isabs(path):
@@ -127,10 +131,12 @@ def read_file(path: str) -> str:
         else:
             workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
             safe_path = resolve_workspace_path(workspace_dir, path)
-        with open(safe_path, "r", encoding="utf-8") as f: content = f.read()
+        with open(safe_path, "r", encoding="utf-8") as f:
+            content = f.read()
         return tool_result("success", content, path=safe_path)
     except Exception as e:
         return tool_result("error", str(e), path=path)
+
 
 def write_file(path: str, content: str) -> str:
     try:
@@ -140,10 +146,12 @@ def write_file(path: str, content: str) -> str:
             workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
             safe_path = resolve_workspace_path(workspace_dir, path)
         os.makedirs(os.path.dirname(safe_path), exist_ok=True)
-        with open(safe_path, "w", encoding="utf-8") as f: f.write(content)
+        with open(safe_path, "w", encoding="utf-8") as f:
+            f.write(content)
         return tool_result("success", f"Successfully wrote to {safe_path}", path=safe_path)
     except Exception as e:
         return tool_result("error", str(e), path=path)
+
 
 _WEB_SEARCH_HEADERS = {
     "User-Agent": (
@@ -155,6 +163,7 @@ _WEB_SEARCH_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Connection": "keep-alive",
 }
+
 
 def _do_web_search(query: str, timeout: int) -> list:
     """返回搜索结果列表，最多 5 条。"""
@@ -178,6 +187,7 @@ def _do_web_search(query: str, timeout: int) -> list:
             break
     return results
 
+
 def web_search(query: str) -> str:
     last_err = None
     # 两次尝试：第一次 20s，超时后自动重试一次 30s
@@ -196,6 +206,7 @@ def web_search(query: str) -> str:
         f"Web search failed after retries: {last_err}. "
         "Tip: use fetch_url with a direct URL as an alternative.",
     )
+
 
 def fetch_url(url: str) -> str:
     try:
@@ -218,6 +229,7 @@ def fetch_url(url: str) -> str:
         )
     except Exception as e:
         return tool_result("error", str(e), path=url)
+
 
 available_functions = {
     "execute_bash": execute_bash,

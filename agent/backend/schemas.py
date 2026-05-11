@@ -1,11 +1,14 @@
 # agent/backend/schemas.py
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
+
 
 class ProjectCreateRequest(BaseModel):
     name: str
     description: Optional[str] = ""
     workspace_path: Optional[str] = None  # 如果提供则表示“打开已有项目”
+
 
 class ProjectResponse(BaseModel):
     id: str
@@ -14,12 +17,15 @@ class ProjectResponse(BaseModel):
     created_at: str
     description: str
 
+
 class DeleteProjectResponse(BaseModel):
     status: str
     project_id: str
 
+
 class SessionCreateRequest(BaseModel):
     title: Optional[str] = "New Session"
+
 
 class SessionResponse(BaseModel):
     id: str
@@ -28,19 +34,23 @@ class SessionResponse(BaseModel):
     created_at: str
     status: str
 
+
 class StateResponse(BaseModel):
     session_id: str
     project_id: str
     status: str
     snapshot: Dict[str, Any]
 
+
 class ChatRequest(BaseModel):
     message: str
+
 
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
     status: str
+
 
 class PlanResponse(BaseModel):
     id: str
@@ -49,7 +59,6 @@ class PlanResponse(BaseModel):
     status: str
     created_at: str
 
-from enum import Enum
 
 class PlanAction(str, Enum):
     agree = "agree"
@@ -57,22 +66,27 @@ class PlanAction(str, Enum):
     skip = "skip"
     stop = "stop"
 
+
 class PlanActionRequest(BaseModel):
     action: PlanAction
+
 
 class PlanActionResponse(BaseModel):
     plan_id: str
     action: str
     status: str
 
+
 class FileTreeResponse(BaseModel):
     path: str
     type: str  # file or directory
     children: Optional[List['FileTreeResponse']] = None
 
+
 class AgentConfigResponse(BaseModel):
     model: str
     version_label: str = ""
+
 
 class AgentConfigUpdateRequest(BaseModel):
     model: Optional[str] = None
@@ -141,6 +155,7 @@ class EvalTaskResultResponse(BaseModel):
     security_json: Dict[str, Any] = Field(default_factory=dict)
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+
 
 class FileContentResponse(BaseModel):
     path: str

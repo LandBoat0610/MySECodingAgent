@@ -8,7 +8,7 @@
 lint → security → test → report → build
 ```
 
-前 4 个阶段（CI）使用自定义 Docker 镜像 `ci-python:latest` 加速执行，`build` 阶段通过挂载的宿主机 Docker socket 直接构建部署镜像。
+前 4 个阶段（CI）使用公开 Docker 镜像 `python:3.11-slim` 并在 job 内安装依赖，`build` 阶段通过挂载的宿主机 Docker socket 直接构建部署镜像。
 
 ---
 
@@ -21,7 +21,7 @@ lint → security → test → report → build
 | **Executor**    | `docker`（Linux 容器模式）                            |
 | **Runner 名称** | `ymm`                                                 |
 | **GitLab 地址** | `http://172.29.4.49`（内网）                          |
-| **pull_policy** | `if-not-present`（优先使用本地镜像）                  |
+| **pull_policy** | `if-not-present`（优先使用本地缓存镜像）              |
 | **privileged**  | `true`（允许容器内使用 Docker）                       |
 | **volumes**     | 挂载 `/var/run/docker.sock`（复用宿主机 Docker 引擎） |
 
@@ -64,9 +64,23 @@ cd D:\GitLab-Runner
 
 ---
 
-## 自定义 CI 镜像（ci-python）
+## Python CI 镜像
 
-为避免每次 CI 运行都执行 `pip install`（耗时 2-3 分钟），项目提供了 `ci.Dockerfile`：
+当前 `.gitlab-ci.yml` 使用 `python:3.11-slim`，并在隐藏 job `.python_ci` 的 `before_script`
+中安装 `requirements.txt`、pytest、pytest-cov、flake8、bandit、coverage 等依赖。
+
+这样可以避免依赖 Runner 宿主机上预先构建的本地 `ci-python:latest` 镜像。日志中如果出现：
+
+```text
+Using effective pull policy of [always]
+failed to pull image "ci-python:latest"
+```
+
+说明 Runner 配置强制拉取镜像，`.gitlab-ci.yml` 中的 `pull_policy: if-not-present` 没有生效。
+此时要么使用公开/仓库镜像，要么在 Runner 的 `config.toml` 中把 Docker executor 的
+`pull_policy` 改回 `if-not-present`。
+
+项目仍保留 `ci.Dockerfile`，需要进一步加速时可以构建并推送到可访问的镜像仓库：
 
 ```dockerfile
 FROM python:3.11-slim
@@ -77,20 +91,16 @@ RUN pip install --no-cache-dir \
     flake8 bandit coverage
 ```
 
-### 构建命令
+### 可选构建命令
 
 ```powershell
 # 在项目根目录执行（需先启动 Docker Desktop）
 docker build -f ci.Dockerfile -t ci-python .
 ```
 
-### 更新时机
-
-只有当 `requirements.txt` 或 `ci.Dockerfile` 发生变更时才需要重新构建。
-
-### 工作原理
-
-Runner 配置了 `pull_policy = "if-not-present"` 并挂载了宿主机 Docker socket，CI job 启动时 Docker executor 先在本地查找 `ci-python:latest`，找到则直接使用，不访问任何外部 Registry。
+另外，本次失败日志里 Docker Desktop 正在访问 `docker.mirrors.ustc.edu.cn`，并且 DNS 解析失败。
+如果后续 `python:3.11-slim`、`node:20` 或 `docker:24` 也拉取失败，需要在 Docker Desktop
+的 Docker Engine 配置中移除或替换这个失效的 registry mirror，然后重启 Docker Desktop。
 
 ---
 
@@ -99,10 +109,10 @@ Runner 配置了 `pull_policy = "if-not-present"` 并挂载了宿主机 Docker s
 ```
 push to any branch
      │
-     ├─ lint       (flake8 代码风格检查, image: ci-python)
-     ├─ security   (bandit 安全扫描, image: ci-python)
-     ├─ test       (pytest × 5 + vitest, 并行运行, image: ci-python / node:20)
-     ├─ report     (coverage 覆盖率合并, image: ci-python)
+     ├─ lint       (flake8 代码风格检查, image: python:3.11-slim)
+     ├─ security   (bandit 安全扫描, image: python:3.11-slim)
+     ├─ test       (pytest × 5 + vitest, 并行运行, image: python:3.11-slim / node:20)
+     ├─ report     (coverage 覆盖率合并, image: python:3.11-slim)
      │
      └─ [main only] build_docker  ← CI 全部通过后自动触发
           ├─ 构建后端镜像  → 推送 registry.../backend:SHA
