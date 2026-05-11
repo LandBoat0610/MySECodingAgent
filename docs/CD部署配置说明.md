@@ -21,7 +21,7 @@ lint → security → test → report → build
 | **Executor**    | `docker`（Linux 容器模式）                            |
 | **Runner 名称** | `ymm`                                                 |
 | **GitLab 地址** | `http://172.29.4.49`（内网）                          |
-| **pull_policy** | `if-not-present`（优先使用本地缓存镜像）              |
+| **pull_policy** | 当前 Runner 只允许 `always`                           |
 | **privileged**  | `true`（允许容器内使用 Docker）                       |
 | **volumes**     | 挂载 `/var/run/docker.sock`（复用宿主机 Docker 引擎） |
 
@@ -41,7 +41,8 @@ check_interval = 0
     image = "python:3.11"
     privileged = true
     volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
-    pull_policy = "if-not-present"
+    pull_policy = "always"
+    allowed_pull_policies = ["always"]
 ```
 
 ### Runner 注册命令（参考）
@@ -76,9 +77,8 @@ Using effective pull policy of [always]
 failed to pull image "ci-python:latest"
 ```
 
-说明 Runner 配置强制拉取镜像，`.gitlab-ci.yml` 中的 `pull_policy: if-not-present` 没有生效。
-此时要么使用公开/仓库镜像，要么在 Runner 的 `config.toml` 中把 Docker executor 的
-`pull_policy` 改回 `if-not-present`。
+说明 Runner 配置强制拉取镜像。当前 `.gitlab-ci.yml` 不再显式配置 `pull_policy`，避免在
+`allowed_pull_policies = ["always"]` 的 Runner 上触发 `invalid pull policy`。
 
 项目仍保留 `ci.Dockerfile`，需要进一步加速时可以构建并推送到可访问的镜像仓库：
 
@@ -99,8 +99,9 @@ docker build -f ci.Dockerfile -t ci-python .
 ```
 
 另外，本次失败日志里 Docker Desktop 正在访问 `docker.mirrors.ustc.edu.cn`，并且 DNS 解析失败。
-如果后续 `python:3.11-slim`、`node:20` 或 `docker:24` 也拉取失败，需要在 Docker Desktop
-的 Docker Engine 配置中移除或替换这个失效的 registry mirror，然后重启 Docker Desktop。
+`python:3.11-slim`、`node:20`、`docker:24` 都需要从 Docker Hub 拉取，所以必须在 Runner
+宿主机的 Docker Desktop Docker Engine 配置中移除或替换这个失效的 registry mirror，然后重启
+Docker Desktop 和 GitLab Runner。
 
 ---
 
@@ -145,7 +146,7 @@ push to any branch
 | 场景         | ❌ 错误（PowerShell）                       | ✅ 正确（bash）                             |
 | ------------ | ------------------------------------------ | ------------------------------------------ |
 | 设置环境变量 | `$env:COVERAGE_FILE = ".coverage.backend"` | `export COVERAGE_FILE=".coverage.backend"` |
-| 安装包       | （CI 镜像已预装，不需要）                  | —                                          |
+| 安装包       | `pip install ...`                          | `python -m pip install ...`               |
 | 条件判断     | `if ($?) { ... }`                          | `if [ $? -eq 0 ]; then ... fi`             |
 
 ### 不需要 docker:dind
@@ -161,19 +162,18 @@ push to any branch
 `CI_REGISTRY`、`CI_REGISTRY_USER`、`CI_REGISTRY_PASSWORD`、`CI_REGISTRY_IMAGE`、`CI_COMMIT_SHORT_SHA` 均为 GitLab 内置变量，流水线运行时自动注入。
 
 需要确认的事项：
-1. **Docker Desktop** 已安装并处于 **Linux 容器模式**，且配置了镜像加速器（解决国内访问 Docker Hub 问题）
+1. **Docker Desktop** 已安装并处于 **Linux 容器模式**
 2. GitLab Runner 已注册为 **`docker` executor**（不是 `shell` 或 `docker-windows`）
-3. **`ci-python:latest` 镜像已在宿主机构建好**（`docker build -f ci.Dockerfile -t ci-python .`）
-4. `node:20` 和 `docker:24` 基础镜像已提前拉取到本地（`docker pull node:20 && docker pull docker:24`）
+3. Docker Desktop 的 Docker Engine 配置中没有失效的 Docker Hub 镜像源
+4. Runner 当前只允许 `pull_policy = "always"`，因此必须保证可以正常拉取 `python:3.11-slim`、`node:20` 和 `docker:24`
 
 ---
 
 ## 演示视频里如何展示 CD
 
-1. 本地构建 CI 镜像：`docker build -f ci.Dockerfile -t ci-python .`
-2. Push 代码到 `cd` 分支，展示流水线运行，所有 stage 绿色 ✅
-3. （main 分支）点进 `build_docker` job，展示 `docker push` 成功
-4. 对比日志：Python job 无需 `pip install`，直接执行测试
+1. Push 代码到 `cd` 分支，展示流水线运行，所有 stage 绿色 ✅
+2. 点进 lint/test job，展示依赖安装、测试和覆盖率输出
+3. （main 分支）点进 `build_docker` job，展示 Docker 镜像构建成功
 
 ---
 
@@ -206,12 +206,14 @@ docker-compose up
 因为 CI 任务在 Linux Docker 容器中运行，shell 是 bash 而非 PowerShell。
 `$env:VAR = "value"` 是 PowerShell 语法，在 bash 中应使用 `export VAR="value"`。
 
-**Q: 拉取 Docker Hub 镜像失败（EOF / timeout）？**
+**Q: 拉取 Docker Hub 镜像失败（EOF / timeout / no such host）？**
 
-国内访问 Docker Hub 不稳定。解决方法：
-1. 在 Docker Desktop 设置中配置镜像加速器
-2. 提前手动 `docker pull` 所需镜像（`python:3.11`、`node:20`、`docker:24`）
-3. Runner 配置 `pull_policy = "if-not-present"` 优先使用本地镜像
+国内访问 Docker Hub 不稳定，且本项目当前 Runner 只允许 `pull_policy = "always"`，所以本地提前
+`docker pull` 不能绕过拉取。解决方法：
+1. 打开 Docker Desktop → Settings → Docker Engine
+2. 删除或替换失效的 `"registry-mirrors"` 项，例如 `https://docker.mirrors.ustc.edu.cn`
+3. 点击 Apply & Restart
+4. 重启 GitLab Runner 服务后重新运行流水线
 
 **Q: `build_docker` 是否需要 docker:dind？**
 

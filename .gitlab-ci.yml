@@ -21,9 +21,7 @@ variables:
   CI_TEST_IMAGE: "python:3.11-slim"
 
 .python_ci:
-  image:
-    name: $CI_TEST_IMAGE
-    pull_policy: if-not-present
+  image: $CI_TEST_IMAGE
   before_script:
     - python -m pip install --upgrade pip
     - python -m pip install -r requirements.txt pytest pytest-cov python-multipart flake8 bandit coverage

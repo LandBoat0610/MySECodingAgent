@@ -523,18 +523,18 @@ Python job 使用公开镜像 `python:3.11-slim`，并在 `before_script` 中安
 以及 pytest / pytest-cov / flake8 / bandit / coverage 等 CI 工具。这样流水线不依赖某台
 Runner 宿主机上预先构建的本地 `ci-python:latest` 镜像。
 
-如果继续使用自定义本地镜像，需要确保 GitLab Runner 的 Docker executor 没有强制
-`pull_policy = "always"`，否则 Runner 会尝试从 Docker Hub 拉取 `ci-python:latest` 并失败。
+当前 Runner 只允许 `allowed_pull_policies = ["always"]`，因此 `.gitlab-ci.yml` 不再显式配置
+`pull_policy`，避免触发 `invalid pull policy`。
 
-本次报错日志中的 `Using effective pull policy of [always]` 说明 Runner 实际配置覆盖了
-`.gitlab-ci.yml` 中的 `pull_policy: if-not-present`。
+如果 Docker Desktop 配置了失效的 Docker Hub 镜像源，仍会在拉取 `python:3.11-slim`、
+`node:20`、`docker:24` 时失败。日志中的 `docker.mirrors.ustc.edu.cn` DNS 解析失败需要在
+Runner 宿主机 Docker Desktop 配置中移除或替换。
 
 ### Runner 要求
 
 - **Executor**：`docker`（Linux 容器模式）
 - **宿主机配置**：挂载 `/var/run/docker.sock` + `privileged = true`
-- 如使用本地自定义镜像，Runner 需配置 `pull_policy = "if-not-present"`，并移除失效的
-  Docker Hub 镜像源（例如日志里的 `docker.mirrors.ustc.edu.cn` DNS 解析失败）
+- 移除失效的 Docker Hub 镜像源（例如日志里的 `docker.mirrors.ustc.edu.cn` DNS 解析失败）
 - 详见 [docs/CD部署配置说明.md](docs/CD部署配置说明.md)
 
 ---
