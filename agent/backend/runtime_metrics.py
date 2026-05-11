@@ -1,7 +1,7 @@
 """IDE / Agent 运行时显式指标：Token、工具调用成功率与耗时。"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 def ensure_runtime_metrics(state: Optional[Dict[str, Any]]) -> None:

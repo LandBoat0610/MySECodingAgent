@@ -39,14 +39,11 @@ bandit_scan:
   needs: []
 
 # ============================================================
-# 3. 单元测试 — 使用自定义镜像，不再重复安装依赖
+# 3. 单元测试 — 使用预装依赖的 ci-python 镜像，跳过 pip install
 # ============================================================
 .test_base:
-  # 👇 关键修改：使用我们构建的自定义镜像
-  image: $CI_TEST_IMAGE
-  # ❌ 删除 before_script 中的 pip install 命令（依赖已在镜像中）
+  image: ${CI_TEST_IMAGE}
   before_script:
-    # 可选：如果有额外需要在运行时安装的包（例如某个测试需要的临时工具），可以保留，但一般不需要
     - echo "Using prebuilt CI image with all dependencies."
 
 pytest_backend:
@@ -181,7 +178,7 @@ coverage_merge:
     - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# CD 阶段：只构建镜像，不推送到 Registry（无 Container Registry）
+# CD 阶段：通过宿主机 Docker socket 构建镜像（无需 dind）
 build_docker:
   stage: build
   image: docker:24
@@ -197,6 +194,7 @@ build_docker:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "cd2"
+    - if: $CI_COMMIT_BRANCH == "feat1"
   needs:
     - coverage_merge
     - vitest_frontend
@@ -241,6 +239,7 @@ deploy_local:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "cd2"
+    - if: $CI_COMMIT_BRANCH == "feat1"
   needs:
     - build_docker
   environment:

@@ -1,13 +1,5 @@
 # tests/test_eval_quality.py
 """测试 eval_quality 模块的纯函数：radar_vector、mean_radar、evaluation_result_to_dict 等。"""
-import os
-import sys
-import json
-import pytest
-from unittest.mock import patch, MagicMock
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from agent.backend.eval_quality import (
     build_radar_vector,
     mean_radar,
@@ -16,6 +8,11 @@ from agent.backend.eval_quality import (
     compute_ragas_scores,
     compute_judge_scores,
 )
+import os
+import sys
+import pytest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 # ========== build_radar_vector ==========

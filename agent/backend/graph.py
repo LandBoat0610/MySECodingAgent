@@ -13,26 +13,27 @@ except Exception:
 
 from agent.backend.state import AgentState
 from agent.backend.config import get_effective_model, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
-from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, resolve_workspace_path, tool_result
+from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
-from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context, llm_json
+from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
 
 import time
 from agent.backend.database import get_connection
 
+
 def wait_for_plan_approval(session_id: str) -> str:
     timeout = 300
     start_time = time.time()
-    
+
     while time.time() - start_time < timeout:
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT status FROM sessions WHERE id = ?",
                 (session_id,)
             ).fetchone()
-            
+
             if row:
                 status = row["status"]
                 if status == "approved":
@@ -43,10 +44,11 @@ def wait_for_plan_approval(session_id: str) -> str:
                     return "refining"
                 if status == "skipped":
                     return "skipped"
-        
+
         time.sleep(2)
-    
+
     return "timeout"
+
 
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
@@ -57,14 +59,14 @@ def planner_node(state: AgentState) -> AgentState:
 
     steps = create_plan(state["task"], state.get("memory", ""), trace, state)
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
-    
+
     state["task_list"] = steps
     state["current_task_index"] = 0
     state["current_task"] = steps[0] if steps else state["task"]
     state["target_file"] = targets["target_file"]
     state["run_command"] = targets["run_command"]
     state["code_context"] = extract_code_context(state["target_file"], state["workspace_dir"])
-    
+
     # 将计划写入数据库
     if session_id:
         import uuid
@@ -73,21 +75,24 @@ def planner_node(state: AgentState) -> AgentState:
             with get_connection() as conn:
                 for step in steps:
                     conn.execute(
-                        "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (uuid.uuid4().hex[:8], session_id, state["project_id"], step, "pending", datetime.now().isoformat())
+                        "INSERT INTO plans "
+                        "(id, session_id, project_id, content, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex[:8], session_id, state["project_id"],
+                         step, "pending", datetime.now().isoformat())
                     )
         except Exception as e:
             print(f"Error saving plans to DB: {e}")
-            
+
     if session_id:
         from agent.backend.utils import update_session_state
         state["status"] = "awaiting_approval"
         update_session_state(session_id, state, status="awaiting_approval")
-        
+
         log_state(trace, "planner", "计划已生成，等待用户确认...", session_id=session_id, state=state)
-        
+
         approval_result = wait_for_plan_approval(session_id)
-        
+
         if approval_result == "approved":
             state["status"] = "running"
             update_session_state(session_id, state, status="running")
@@ -112,8 +117,11 @@ def planner_node(state: AgentState) -> AgentState:
                         )
                         for step in steps:
                             conn.execute(
-                                "INSERT INTO plans (id, session_id, project_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                                (uuid.uuid4().hex[:8], session_id, state["project_id"], step, "pending", datetime.now().isoformat())
+                                "INSERT INTO plans "
+                                "(id, session_id, project_id, content, status, created_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (uuid.uuid4().hex[:8], session_id, state["project_id"],
+                                 step, "pending", datetime.now().isoformat())
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")
@@ -133,7 +141,7 @@ def planner_node(state: AgentState) -> AgentState:
             state["status"] = "stopped"
             update_session_state(session_id, state, status="stopped")
             log_state(trace, "planner", f"执行终止: {approval_result}", session_id=session_id, state=state)
-        
+
     return state
 
 
@@ -151,6 +159,7 @@ def _check_cancel(state: AgentState) -> bool:
             _log(trace, "cancelled", "Agent execution cancelled by user", session_id=session_id, state=state)
         return True
     return False
+
 
 def executor_node(state: AgentState) -> AgentState:
     if state.get("status") == "stopped":
@@ -196,7 +205,11 @@ def executor_node(state: AgentState) -> AgentState:
         msg_dict = {"role": message.role, "content": message.content}
         if message.tool_calls:
             msg_dict["tool_calls"] = [
-                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
                 for tc in message.tool_calls
             ]
         messages.append(msg_dict)
@@ -335,7 +348,8 @@ def check_result_node(state: AgentState) -> AgentState:
         if any(sig in result_text for sig in completion_signals):
             state["status"] = "step_ok"
             state["_task_fully_done"] = True
-            log_state(trace, "check_result", "Task appears fully complete, skipping remaining steps", session_id=session_id, state=state)
+            log_state(trace, "check_result", "Task appears fully complete, skipping remaining steps",
+                      session_id=session_id, state=state)
 
     return state
 
@@ -363,7 +377,7 @@ def modify_code_node(state: AgentState) -> AgentState:
 
     try:
         from agent.backend.llm import llm_json
-        from agent.backend.utils import resolve_workspace_path, safe_trim
+        from agent.backend.utils import safe_trim
         data = llm_json(
             (
                 "You are a code repair module. Return JSON with keys: diagnosis, updated_code, summary. "
@@ -424,17 +438,19 @@ def finalize_node(state: AgentState) -> AgentState:
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
     if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
-    
+
     if session_id:
         from agent.backend.utils import update_session_state
         final_status = state.get("status", "completed")
         if final_status not in ("stopped", "skipped"):
             final_status = "completed"
         update_session_state(session_id, state, status=final_status)
-        
+
     return state
 
 # Routing
+
+
 def route_after_check(state: AgentState) -> str:
     if state.get("status") == "stopped":
         return "finalize"
@@ -461,6 +477,8 @@ def next_step_node(state: AgentState) -> AgentState:
     return state
 
 # Graph execution
+
+
 def build_graph():
     if not LANGGRAPH_AVAILABLE:
         return None

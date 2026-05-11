@@ -1,4 +1,12 @@
 # tests/test_tools.py
+from agent.backend.tools import (
+    execute_bash,
+    read_file,
+    write_file,
+    web_search,
+    fetch_url,
+    parse_tool_arguments,
+)
 import json
 import os
 import sys
@@ -10,16 +18,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 # 导入 agent 模块
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from agent.backend.tools import (
-    execute_bash,
-    read_file,
-    write_file,
-    web_search,
-    fetch_url,
-    parse_tool_arguments,
-    CURRENT_WORKSPACE_DIR,
-)
 
 
 # ==================== Fixtures ====================

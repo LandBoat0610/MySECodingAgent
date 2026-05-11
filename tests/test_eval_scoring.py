@@ -1,17 +1,15 @@
 # tests/test_eval_scoring.py
 """测试 eval_scoring 模块：结果导向/过程导向评分判定与评测 prompt 构建。"""
-import os
-import sys
-import pytest
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from agent.backend.eval_scoring import (
     evaluate_result_oriented,
     evaluate_process_oriented,
     decide_passed,
     build_eval_prompt,
 )
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 class TestEvaluateResultOriented:

@@ -419,7 +419,7 @@ describe('agent store', () => {
             expect(store.wsConnection).not.toBe(firstWs)
         })
 
-        it('should reset trace and record run start time on ws phase start', () => {
+        it('should record run start time on ws phase start without clearing trace', () => {
             const store = createStore()
             store.selectedProjectId = 'p1'
             store.selectedSessionId = 's1'
@@ -431,7 +431,9 @@ describe('agent store', () => {
                 message: 'Agent 正在执行...'
             })
 
-            expect(store.traceLogs).toEqual([])
+            // traceLogs 在 start 阶段不会被清空，避免重连时覆盖已有轨迹
+            expect(store.traceLogs).toHaveLength(1)
+            expect(store.traceLogs[0]).toEqual({ phase: 'old', content: 'x' })
             expect(store.agentRunStartedAt).toBeTruthy()
             expect(typeof store.agentRunStartedAt).toBe('number')
             expect(store.livePerf.tokensTotal).toBe(0)

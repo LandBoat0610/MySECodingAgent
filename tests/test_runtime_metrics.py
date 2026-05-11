@@ -1,12 +1,5 @@
 # tests/test_runtime_metrics.py
 """测试 runtime_metrics 模块：Token、工具调用统计与归一化。"""
-import os
-import sys
-import pytest
-from unittest.mock import MagicMock
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from agent.backend.runtime_metrics import (
     ensure_runtime_metrics,
     record_llm_usage,
@@ -15,6 +8,12 @@ from agent.backend.runtime_metrics import (
     radar_tool_success_norm,
     radar_token_efficiency_norm,
 )
+import os
+import sys
+import pytest
+from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 class TestEnsureRuntimeMetrics:
@@ -41,11 +40,13 @@ class TestEnsureRuntimeMetrics:
 class TestRecordLlmUsage:
     def test_records_token_usage(self):
         state = {"_dummy": True}
+
         # Use a simple object with attributes instead of MagicMock
         class Usage:
             prompt_tokens = 50
             completion_tokens = 30
             total_tokens = 80
+
         class Response:
             usage = Usage()
         mock_resp = Response()
@@ -59,12 +60,15 @@ class TestRecordLlmUsage:
 
     def test_multiple_calls_accumulate(self):
         state = {"_dummy": True}
+
         class Usage:
             prompt_tokens = 10
             completion_tokens = 5
             total_tokens = 15
+
         class Response:
             usage = Usage()
+
         mock_resp = Response()
 
         record_llm_usage(state, mock_resp)
@@ -75,8 +79,10 @@ class TestRecordLlmUsage:
 
     def test_no_usage_does_nothing(self):
         state = {"_dummy": True}
+
         class Response:
             usage = None
+
         mock_resp = Response()
         record_llm_usage(state, mock_resp)
         rm = state["runtime_metrics"]

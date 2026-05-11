@@ -1,9 +1,12 @@
 # main.py
+from agent.backend.utils import sync_workspace_file_back
+from agent.backend.graph import build_graph, run_manual_fallback
+import threading
 import os
 import uuid
 import json
 import asyncio
-from typing import Dict, List, Any
+from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -25,11 +28,11 @@ from agent.backend.schemas import (
     AgentConfigResponse,
     AgentConfigUpdateRequest,
 )
-from agent.backend.utils import ensure_workspace
 from agent.backend.platform_settings import get_agent_config, set_agent_config
 from agent.backend.eval_router import router as eval_router
 
 load_dotenv()
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -40,12 +43,15 @@ load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 app.include_router(eval_router)
 
+
 @app.get("/health")
 def health_check():
     """健康检查端点 - 用于 Docker 健康检查和 CI/CD 部署验证"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ------------------ 平台 Agent 配置（IDE 与评测中心共用）------------------
+
+
 @app.get("/settings/agent-config", response_model=AgentConfigResponse)
 def read_agent_config():
     cfg = get_agent_config()
@@ -70,6 +76,8 @@ WORKSPACES_ROOT = os.path.abspath("workspaces")
 os.makedirs(WORKSPACES_ROOT, exist_ok=True)
 
 # ------------------ 1. 获取项目列表 ------------------
+
+
 @app.get("/projects", response_model=list[ProjectResponse])
 def list_projects():
     with get_connection() as conn:
@@ -77,6 +85,8 @@ def list_projects():
     return [dict(row) for row in rows]
 
 # ------------------ 2. 创建/打开项目 ------------------
+
+
 @app.post("/projects", response_model=ProjectResponse, status_code=201)
 def create_or_open_project(req: ProjectCreateRequest):
     now = datetime.now().isoformat()
@@ -105,6 +115,8 @@ def create_or_open_project(req: ProjectCreateRequest):
     )
 
 # ------------------ 2.5 删除项目 ------------------
+
+
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: str):
     with get_connection() as conn:
@@ -116,7 +128,10 @@ def delete_project(project_id: str):
         session_ids = [s["id"] for s in sessions]
 
         for sid in session_ids:
-            conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+            conn.execute(
+                "DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)",
+                (sid,),
+            )
             conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
 
         conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
@@ -131,6 +146,8 @@ def delete_project(project_id: str):
     return {"status": "deleted", "project_id": project_id}
 
 # ------------------ 3. 获取会话列表 ------------------
+
+
 @app.get("/projects/{project_id}/sessions", response_model=list[SessionResponse])
 def list_sessions(project_id: str):
     with get_connection() as conn:
@@ -138,12 +155,15 @@ def list_sessions(project_id: str):
         if not proj:
             raise HTTPException(status_code=404, detail="项目不存在")
         rows = conn.execute(
-            "SELECT id, project_id, title, created_at, status FROM sessions WHERE project_id = ? ORDER BY created_at DESC",
+            "SELECT id, project_id, title, created_at, status "
+            "FROM sessions WHERE project_id = ? ORDER BY created_at DESC",
             (project_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 # ------------------ 4. 新建会话 ------------------
+
+
 @app.post("/projects/{project_id}/sessions", response_model=SessionResponse, status_code=201)
 def create_session(project_id: str, req: SessionCreateRequest):
     now = datetime.now().isoformat()
@@ -187,7 +207,9 @@ def create_session(project_id: str, req: SessionCreateRequest):
         }
 
         conn.execute(
-            "INSERT INTO sessions (id, project_id, title, created_at, state_snapshot, status) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions "
+            "(id, project_id, title, created_at, state_snapshot, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (session_id, project_id, req.title, now, json.dumps(initial_state, ensure_ascii=False), "idle"),
         )
 
@@ -200,6 +222,8 @@ def create_session(project_id: str, req: SessionCreateRequest):
     )
 
 # ------------------ 5. 获取会话状态快照 ------------------
+
+
 @app.get("/projects/{project_id}/sessions/{sid}/state", response_model=StateResponse)
 def get_session_state(project_id: str, sid: str):
     with get_connection() as conn:
@@ -218,6 +242,8 @@ def get_session_state(project_id: str, sid: str):
     )
 
 # ------------------ 6. 发送消息（对话）------------------
+
+
 @app.post("/projects/{project_id}/sessions/{sid}/chat", response_model=ChatResponse)
 def chat(project_id: str, sid: str, req: ChatRequest):
     with get_connection() as conn:
@@ -244,17 +270,17 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         status="running",
     )
 
+
 # ------------------ 7. WebSocket 流式对话 ------------------
-import threading
-from agent.backend.graph import build_graph, run_manual_fallback
-from agent.backend.utils import sync_workspace_file_back, register_log_callback, unregister_log_callback
 
 _cancel_events: Dict[str, threading.Event] = {}
+
 
 def get_cancel_event(sid: str) -> threading.Event:
     if sid not in _cancel_events:
         _cancel_events[sid] = threading.Event()
     return _cancel_events[sid]
+
 
 def cleanup_cancel_event(sid: str):
     _cancel_events.pop(sid, None)
@@ -346,13 +372,15 @@ class AgentRunner:
                 ).fetchone()
                 if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
                     conn.execute(
-                        "UPDATE sessions SET status = 'completed' WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+                        "UPDATE sessions SET status = 'completed' "
+                        "WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
                         (self.sid,),
                     )
             cleanup_cancel_event(self.sid)
 
 
 _agent_runners: Dict[str, AgentRunner] = {}
+
 
 def get_or_create_agent_runner(sid: str) -> AgentRunner:
     existing = _agent_runners.get(sid)
@@ -362,7 +390,6 @@ def get_or_create_agent_runner(sid: str) -> AgentRunner:
         _agent_runners[sid] = AgentRunner(sid)
     return _agent_runners[sid]
 
-from agent.backend.utils import _LOG_CALLBACKS_LOCK
 
 @app.websocket("/projects/{project_id}/sessions/{sid}/chat/stream")
 async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
@@ -399,9 +426,9 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
     def on_log(item):
         runner.send_to_ws({"type": "trace", "data": item})
 
-    from agent.backend.utils import _LOG_CALLBACKS
-    with _LOG_CALLBACKS_LOCK:
-        _LOG_CALLBACKS.append(on_log)
+    # 以 sid 为 key 注册，自动替换同会话的旧回调，消除重连后重复推送
+    from agent.backend.utils import register_log_callback
+    register_log_callback(on_log, session_id=sid)
 
     if need_start:
         runner.start(state)
@@ -435,10 +462,8 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
         except Exception:
             pass
     finally:
-        from agent.backend.utils import _LOG_CALLBACKS as cb_list
-        with _LOG_CALLBACKS_LOCK:
-            if on_log in cb_list:
-                cb_list.remove(on_log)
+        from agent.backend.utils import unregister_log_callback
+        unregister_log_callback(on_log, session_id=sid)
         runner.clear_ws_if_same(websocket)
         try:
             await websocket.close()
@@ -446,6 +471,8 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             pass
 
 # ------------------ 8. 获取当前会话的计划树 ------------------
+
+
 @app.get("/projects/{project_id}/sessions/{sid}/plan", response_model=list[PlanResponse])
 def get_plan(project_id: str, sid: str):
     with get_connection() as conn:
@@ -457,13 +484,15 @@ def get_plan(project_id: str, sid: str):
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
 
         plans = conn.execute(
-            "SELECT * FROM plans WHERE session_id = ? ORDER BY created_at DESC",
+            "SELECT *, rowid FROM plans WHERE session_id = ? ORDER BY rowid ASC",
             (sid,),
         ).fetchall()
 
     return [dict(p) for p in plans]
 
 # ------------------ 9. 用户对计划执行确认操作 ------------------
+
+
 @app.post("/projects/{project_id}/sessions/{sid}/plan/{pid}/action", response_model=PlanActionResponse)
 def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
     with get_connection() as conn:
@@ -527,6 +556,8 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
     )
 
 # ------------------ 9.5 停止会话运行 ------------------
+
+
 @app.post("/projects/{project_id}/sessions/{sid}/stop")
 def stop_session(project_id: str, sid: str):
     with get_connection() as conn:
@@ -555,6 +586,8 @@ def stop_session(project_id: str, sid: str):
     return {"status": "stopped", "session_id": sid}
 
 # ------------------ 10. 获取项目文件树 ------------------
+
+
 @app.get("/projects/{project_id}/files", response_model=list[FileTreeResponse])
 def get_file_tree(project_id: str):
     with get_connection() as conn:

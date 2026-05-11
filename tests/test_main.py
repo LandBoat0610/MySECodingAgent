@@ -3,7 +3,7 @@ import os
 import sys
 import json
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from fastapi import WebSocketDisconnect
 
@@ -16,12 +16,12 @@ os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
 
 # ---------- 提前 mock 所有数据库和 agent 依赖，防止 import 时意外初始化 ----------
 with patch("agent.backend.database.get_connection") as mock_db_conn, \
-     patch("agent.backend.database.init_db"), \
-     patch("agent.backend.graph.build_graph"), \
-     patch("agent.backend.graph.run_manual_fallback"), \
-     patch("agent.backend.utils.sync_workspace_file_back"), \
-     patch("agent.backend.utils.register_log_callback"), \
-     patch("agent.backend.utils.unregister_log_callback"):
+        patch("agent.backend.database.init_db"), \
+        patch("agent.backend.graph.build_graph"), \
+        patch("agent.backend.graph.run_manual_fallback"), \
+        patch("agent.backend.utils.sync_workspace_file_back"), \
+        patch("agent.backend.utils.register_log_callback"), \
+        patch("agent.backend.utils.unregister_log_callback"):
     from agent.main import app
 
 # 创建 TestClient
@@ -67,8 +67,8 @@ class TestProjects:
         mock_conn, mock_cursor = mock_db
         # 模拟 uuid 生成固定值
         with patch("agent.main.uuid.uuid4") as mock_uuid, \
-             patch("agent.main.os.makedirs") as mock_makedirs, \
-             patch("agent.main.get_connection", return_value=mock_conn):
+                patch("agent.main.os.makedirs") as mock_makedirs, \
+                patch("agent.main.get_connection", return_value=mock_conn):
             mock_uuid.return_value.hex = "1a2b3c4d"
             mock_cursor.fetchone.return_value = None  # 不查询
 
@@ -88,8 +88,8 @@ class TestProjects:
         # 指定已存在路径
         existing_path = os.path.abspath("/existing_workspace")
         with patch("agent.main.os.path.isdir", return_value=True), \
-             patch("agent.main.uuid.uuid4") as mock_uuid, \
-             patch("agent.main.get_connection", return_value=mock_conn):
+                patch("agent.main.uuid.uuid4") as mock_uuid, \
+                patch("agent.main.get_connection", return_value=mock_conn):
             mock_uuid.return_value.hex = "opened01"
             response = client.post("/projects", json={
                 "name": "Existing",
@@ -142,7 +142,7 @@ class TestSessions:
         # 模拟项目存在，返回 workspace_path
         mock_cursor.fetchone.return_value = {"id": "p1", "workspace_path": "/workspace/p1"}
         with patch("agent.main.uuid.uuid4") as mock_uuid, \
-             patch("agent.main.get_connection", return_value=mock_conn):
+                patch("agent.main.get_connection", return_value=mock_conn):
             mock_uuid.return_value.hex = "sess001"
             response = client.post("/projects/p1/sessions", json={"title": "My Session"})
             assert response.status_code == 201
@@ -151,7 +151,6 @@ class TestSessions:
             assert data["title"] == "My Session"
             assert data["status"] == "idle"
             # 检查 INSERT 被调用且 state_snapshot 中包含 workspace_dir
-            call_args = mock_conn.execute.call_args_list[1]  # 第一个是查询，第二个是插入
             # 寻找包含 "INSERT INTO sessions" 的调用
             insert_call = None
             for call in mock_conn.execute.call_args_list:
@@ -232,8 +231,8 @@ class TestWebSocket:
         mock_conn, mock_cursor = mock_db
         mock_cursor.fetchone.return_value = None
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.build_graph"), \
-             patch("agent.main.run_manual_fallback"):
+                patch("agent.main.build_graph"), \
+                patch("agent.main.run_manual_fallback"):
             with client.websocket_connect("/projects/p1/sessions/s1/chat/stream") as websocket:
                 data = websocket.receive_json()
                 assert "error" in data
@@ -287,8 +286,8 @@ class TestPlan:
             {"id": "plan1", "session_id": "s1", "status": "pending"}
         ]
         with patch("agent.main.uuid.uuid4") as mock_uuid, \
-             patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.get_cancel_event") as mock_cancel:
+                patch("agent.main.get_connection", return_value=mock_conn), \
+                patch("agent.main.get_cancel_event") as mock_cancel:
             mock_cancel.return_value = MagicMock()
             mock_uuid.return_value.hex = "act001"
             response = client.post("/projects/p1/sessions/s1/plan/plan1/action", json={"action": "agree"})
@@ -340,8 +339,8 @@ class TestDeleteProject:
         mock_cursor.fetchone.return_value = {"id": "p1"}
         mock_cursor.fetchall.return_value = [{"id": "s1"}, {"id": "s2"}]
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.cleanup_cancel_event") as mock_cleanup, \
-             patch("agent.main._agent_runners", {}):
+                patch("agent.main.cleanup_cancel_event") as mock_cleanup, \
+                patch("agent.main._agent_runners", {}):
             response = client.delete("/projects/p1")
             assert response.status_code == 200
             data = response.json()
@@ -357,8 +356,8 @@ class TestDeleteProject:
         mock_runner.is_alive.return_value = True
         mock_runner.cancel_event = MagicMock()
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.cleanup_cancel_event"), \
-             patch("agent.main._agent_runners", {"s1": mock_runner}):
+                patch("agent.main.cleanup_cancel_event"), \
+                patch("agent.main._agent_runners", {"s1": mock_runner}):
             response = client.delete("/projects/p1")
             assert response.status_code == 200
             mock_runner.cancel_event.set.assert_called_once()
@@ -528,7 +527,7 @@ class TestEvalTasks:
     def test_get_task_not_found(self, mock_db):
         mock_conn, mock_cursor = mock_db
         with patch("agent.backend.eval_router.list_eval_tasks", return_value=[]), \
-             patch("agent.backend.eval_router.get_eval_task", side_effect=LookupError("不存在")):
+                patch("agent.backend.eval_router.get_eval_task", side_effect=LookupError("不存在")):
             response = client.get("/eval/tasks/nonexistent")
             assert response.status_code == 404
 
@@ -542,7 +541,7 @@ class TestEvalTasks:
             "completed_items": 0, "passed_count": 0, "failed_count": 0,
         }
         with patch("agent.backend.eval_router.create_eval_task", return_value={"id": "new_task"}), \
-             patch("agent.backend.eval_router.list_eval_tasks", return_value=[mock_result]):
+                patch("agent.backend.eval_router.list_eval_tasks", return_value=[mock_result]):
             response = client.post("/eval/tasks", json={
                 "name": "Eval1", "dataset_id": "ds1", "eval_method": "result"
             })
@@ -560,7 +559,7 @@ class TestEvalTaskResults:
         mock_conn, mock_cursor = mock_db
         mock_cursor.fetchone.return_value = None
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.backend.eval_router.list_task_results", return_value=[]):
+                patch("agent.backend.eval_router.list_task_results", return_value=[]):
             response = client.get("/eval/tasks/t1/results")
             assert response.status_code == 200
             assert response.json() == []
@@ -570,7 +569,7 @@ class TestAgentConfigApi:
     def test_get_config(self, mock_db):
         mock_conn, mock_cursor = mock_db
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.get_agent_config") as mock_get:
+                patch("agent.main.get_agent_config") as mock_get:
             mock_get.return_value = {"model": "gpt-4o", "version_label": "v1"}
             response = client.get("/settings/agent-config")
             assert response.status_code == 200
@@ -580,7 +579,7 @@ class TestAgentConfigApi:
     def test_update_config(self, mock_db):
         mock_conn, mock_cursor = mock_db
         with patch("agent.main.get_connection", return_value=mock_conn), \
-             patch("agent.main.set_agent_config") as mock_set:
+                patch("agent.main.set_agent_config") as mock_set:
             mock_set.return_value = {"model": "gpt-4-turbo", "version_label": "v2"}
             response = client.put("/settings/agent-config", json={
                 "model": "gpt-4-turbo", "version_label": "v2"

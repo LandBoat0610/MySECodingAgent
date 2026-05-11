@@ -40,6 +40,11 @@ export const useAgentStore = defineStore('agent', () => {
   const fileContent = ref('')
   const fileLoading = ref(false)
 
+  /** 多轮对话追踪 */
+  const completedRounds = ref([])     // [{userMessage, traceLogs, plans, finalAnswer}]
+  const currentRoundUserMsg = ref('') // 当前轮次用户输入
+  const prevRoundPlanIds = ref(new Set()) // 上一轮已归档的 plan ID 集合
+
   /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
   const agentRunStartedAt = ref(null)
   /** 由轨迹 meta / 会话快照合并的运行时指标摘要 */
@@ -128,6 +133,9 @@ export const useAgentStore = defineStore('agent', () => {
     selectedFile.value = null
     fileContent.value = ''
     agentRunStartedAt.value = null
+    completedRounds.value = []
+    currentRoundUserMsg.value = ''
+    prevRoundPlanIds.value = new Set()
     resetLivePerfForNewRun()
     fetchSessions()
     fetchFileTree()
@@ -166,6 +174,9 @@ export const useAgentStore = defineStore('agent', () => {
     stateSnapshot.value = null
     agentRunning.value = false
     agentRunStartedAt.value = null
+    completedRounds.value = []
+    currentRoundUserMsg.value = ''
+    prevRoundPlanIds.value = new Set()
     resetLivePerfForNewRun()
     await restoreSessionState()
   }
@@ -178,11 +189,19 @@ export const useAgentStore = defineStore('agent', () => {
       stateSnapshot.value = stateResp.snapshot
 
       const msgs = stateResp.snapshot?.messages || []
-      chatMessages.value = msgs.map(m => ({
-        role: m.role,
-        content: m.content,
-        tool_calls: m.tool_calls || null
-      }))
+      chatMessages.value = msgs
+        .filter(m => {
+          if (m.role === 'system') return false
+          if (m.role === 'tool') return false
+          if (m.role === 'user' && m.content?.startsWith('Current step:')) return false
+          if (m.role === 'assistant' && !m.content?.trim()) return false
+          return true
+        })
+        .map(m => ({
+          role: m.role,
+          content: m.content,
+          tool_calls: m.tool_calls || null
+        }))
 
       await fetchPlans()
 
@@ -193,7 +212,8 @@ export const useAgentStore = defineStore('agent', () => {
       if (stateResp.snapshot?.final_answer) {
         finalAnswer.value = stateResp.snapshot.final_answer
       }
-      if (stateResp.snapshot?.trace) {
+      // 只在 Agent 未运行时才用快照覆盖实时轨迹，避免重连后内容突变
+      if (!agentRunning.value && stateResp.snapshot?.trace) {
         traceLogs.value = stateResp.snapshot.trace || []
       }
       syncLivePerfFromSnapshot()
@@ -279,13 +299,20 @@ export const useAgentStore = defineStore('agent', () => {
               fetchPlans()
             }
           }
+          // Agent 完成一个步骤后刷新文件树（及时展示新建/修改的文件）
+          if (data.data.phase === 'finish_step') {
+            fetchFileTree()
+          }
         }
 
         if (data.phase === 'start') {
           agentRunning.value = true
-          traceLogs.value = []
-          agentRunStartedAt.value = Date.now()
-          resetLivePerfForNewRun()
+          // 不在此处清空 traceLogs，避免重连后覆盖已有轨迹
+          // 清空动作统一由 doSendChat 在发送新任务时负责
+          if (!agentRunStartedAt.value) {
+            agentRunStartedAt.value = Date.now()
+            resetLivePerfForNewRun()
+          }
         }
 
         if (data.phase === 'done') {
@@ -296,6 +323,11 @@ export const useAgentStore = defineStore('agent', () => {
           sessionStatus.value = data.status || 'completed'
           fetchPlans()
           restoreSessionState()
+          // Agent 结束后：刷新文件树，并刷新当前打开的文件内容
+          fetchFileTree()
+          if (selectedFile.value) {
+            fetchFileContent(selectedFile.value.path)
+          }
         }
 
         if (data.phase === 'cancelled') {
@@ -357,6 +389,25 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function doSendChat(message) {
     clearError()
+    // 将当前轮归档到历史（如果本轮已有用户消息）
+    if (currentRoundUserMsg.value) {
+      completedRounds.value.push({
+        userMessage: currentRoundUserMsg.value,
+        traceLogs: [...traceLogs.value],
+        plans: [...plans.value].filter(p => !prevRoundPlanIds.value.has(p.id)),
+        finalAnswer: finalAnswer.value,
+      })
+    }
+    // 记录上一轮的 plan ID 集合，新一轮的 taskList 只显示更新后的 plan
+    prevRoundPlanIds.value = new Set(plans.value.map(p => p.id))
+    // 重置当前轮状态
+    traceLogs.value = []
+    finalAnswer.value = ''
+    plans.value = []
+    stateSnapshot.value = null   // 清空旧快照，防止前端读到上一轮的 task_list / status
+    currentRoundUserMsg.value = message
+    agentRunStartedAt.value = null
+    resetLivePerfForNewRun()
     chatMessages.value.push({ role: 'user', content: message })
     try {
       const resp = await sendChat(selectedProjectId.value, selectedSessionId.value, message)
@@ -365,6 +416,7 @@ export const useAgentStore = defineStore('agent', () => {
       return resp
     } catch (e) {
       chatMessages.value.pop()
+      currentRoundUserMsg.value = ''
       setError(e)
       throw e
     }
@@ -502,6 +554,9 @@ export const useAgentStore = defineStore('agent', () => {
     fileLoading,
     fetchFileContent,
     addAssistantMessage,
-    clearError
+    clearError,
+    completedRounds,
+    currentRoundUserMsg,
+    prevRoundPlanIds,
   }
 })

@@ -1,23 +1,21 @@
 # tests/test_llm.py
+from agent.backend.llm import (
+    build_system_prompt,
+    create_plan,
+    infer_coding_targets,
+    extract_code_context,
+)
 import os
 import sys
 from pathlib import Path
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 # 必须在导入 agent 任何模块之前设置假的环境变量，避免 OpenAI 客户端初始化失败
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from agent.backend.llm import (
-    build_system_prompt,
-    create_plan,
-    infer_coding_targets,
-    extract_code_context,
-    llm_json,
-)
 
 
 # ---------- Fixtures ----------
@@ -94,8 +92,10 @@ class TestCreatePlan:
 class TestInferCodingTargets:
     def test_normal_inference(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
+
         def mock_llm_json(system, user, state=None):
             return {"target_file": "src/app.py", "run_command": "python src/app.py"}
+
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         result = infer_coding_targets("build a web app", workspace, [], {})
         # 跨平台比较路径（在 Windows 下可能会转换成反斜杠）
@@ -104,8 +104,10 @@ class TestInferCodingTargets:
 
     def test_prompt_load_failure(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
+
         def mock_llm_json(system, user, state=None):
             return {"target_file": "fallback.py", "run_command": "python fallback.py"}
+
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         monkeypatch.setattr("agent.backend.llm.load_prompts", MagicMock(side_effect=Exception("no config")))
         result = infer_coding_targets("task", workspace, [], {})
@@ -113,8 +115,10 @@ class TestInferCodingTargets:
 
     def test_llm_error_uses_fallback(self, tmp_path, monkeypatch):
         workspace = str(tmp_path)
+
         def mock_llm_json(system, user, state=None):
             raise Exception("fail")
+
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         result = infer_coding_targets("task", workspace, [], {})
         assert Path(result["target_file"]) == Path("main.py")

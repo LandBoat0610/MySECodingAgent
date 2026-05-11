@@ -2,9 +2,8 @@
 """测试 evaluation_jobs 模块的 CRUD 函数（使用 mock DB）。"""
 import os
 import sys
-import json
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -133,7 +132,7 @@ class TestCreateEvalTask:
         from agent.backend.evaluation_jobs import create_eval_task
         mock_conn, _ = _mock_conn(fetchone_returns=None)
         with patch("agent.backend.evaluation_jobs.get_connection", return_value=mock_conn), \
-             patch("agent.backend.evaluation_jobs.get_dataset_row", return_value=None):
+                patch("agent.backend.evaluation_jobs.get_dataset_row", return_value=None):
             with pytest.raises(LookupError, match="数据集不存在"):
                 create_eval_task("Test", "ds1", "result")
 
@@ -198,7 +197,11 @@ class TestAggregateTaskAnalytics:
             "ragas_json": {"answer_relevancy": 0.8, "faithfulness": 0.9},
             "judge_json": {"reasoning_quality": 7, "hallucination_severity": 3},
             "runtime_metrics_json": {"tokens_total": 500},
-            "radar_json": {"answer_relevancy": 0.7, "faithfulness": 0.8, "reasoning_quality": 0.6, "anti_hallucination": 0.7, "tool_success": 1.0, "token_efficiency": 0.9, "security_hygiene": 1.0},
+            "radar_json": {
+                "answer_relevancy": 0.7, "faithfulness": 0.8, "reasoning_quality": 0.6,
+                "anti_hallucination": 0.7, "tool_success": 1.0, "token_efficiency": 0.9,
+                "security_hygiene": 1.0,
+            },
             "security_json": {"risk_score": 0},
             "started_at": None, "finished_at": None
         }]

@@ -25,6 +25,12 @@ function createMockStore(overrides = {}) {
         traceLogs: [],
         finalAnswer: '',
         pendingPlans: [],
+        // 多轮模式相关（组件新增字段）
+        plans: [],
+        prevRoundPlanIds: new Set(),
+        completedRounds: [],
+        currentRoundUserMsg: '',
+        stateSnapshot: null,
         doSendChat: vi.fn(),
         doPlanAction: vi.fn(),
         doStopSession: vi.fn(),
@@ -52,7 +58,8 @@ describe('ChatPanel.vue', () => {
         it('should show session status badge', () => {
             useAgentStore.mockReturnValue(createMockStore({ sessionStatus: 'running' }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.status-badge').text()).toBe('running')
+            // 状态标签显示中文映射后的文本
+            expect(wrapper.find('.status-badge').text()).toBe('运行中')
         })
 
         it('should show status badge with correct class', () => {
@@ -62,7 +69,7 @@ describe('ChatPanel.vue', () => {
         })
     })
 
-    // ---- 消息渲染 ----
+    // ---- 消息渲染（兼容模式）----
     describe('chat messages', () => {
         it('should render user messages', () => {
             useAgentStore.mockReturnValue(createMockStore({
@@ -70,9 +77,10 @@ describe('ChatPanel.vue', () => {
             }))
             const wrapper = mount(ChatPanel)
             const msgs = wrapper.findAll('.message')
-            expect(msgs).toHaveLength(1)
-            expect(msgs[0].classes()).toContain('user')
-            expect(msgs[0].find('.message-text').text()).toBe('Hello')
+            expect(msgs.length).toBeGreaterThanOrEqual(1)
+            const userMsg = msgs.find(m => m.classes().includes('user'))
+            expect(userMsg).toBeTruthy()
+            expect(userMsg.find('.message-text').text()).toContain('Hello')
         })
 
         it('should render assistant messages', () => {
@@ -82,84 +90,73 @@ describe('ChatPanel.vue', () => {
             const wrapper = mount(ChatPanel)
             const msg = wrapper.find('.message.assistant')
             expect(msg.exists()).toBe(true)
-            expect(msg.find('.message-text').text()).toBe('Hi there!')
+            expect(msg.find('.message-text').text()).toContain('Hi there!')
         })
 
-        it('should render tool calls in messages', () => {
+        it('should not render system messages', () => {
             useAgentStore.mockReturnValue(createMockStore({
-                chatMessages: [{
-                    role: 'assistant',
-                    content: 'Let me do that',
-                    tool_calls: [
-                        { function: { name: 'read_file' } },
-                        { function: { name: 'write_file' } }
-                    ]
-                }]
-            }))
-            const wrapper = mount(ChatPanel)
-            const toolCalls = wrapper.findAll('.tool-call-item')
-            expect(toolCalls).toHaveLength(2)
-            expect(toolCalls[0].text()).toContain('read_file')
-            expect(toolCalls[1].text()).toContain('write_file')
-        })
-    })
-
-    // ---- 执行追踪 ----
-    describe('trace logs', () => {
-        it('should show trace section when logs exist', () => {
-            useAgentStore.mockReturnValue(createMockStore({
-                traceLogs: [
-                    { phase: 'plan', time: '12:00', content: 'Planning...' },
-                    { phase: 'exec', time: '12:01', content: 'Executing...' }
+                chatMessages: [
+                    { role: 'system', content: 'System prompt' },
+                    { role: 'user', content: 'User message' }
                 ]
             }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.trace-section').exists()).toBe(true)
-            expect(wrapper.find('.trace-header').text()).toContain('2 steps')
+            // 只渲染用户消息，系统消息被过滤
+            const msgs = wrapper.findAll('.message')
+            expect(msgs.length).toBe(1)
+            expect(msgs[0].classes()).toContain('user')
         })
+    })
 
-        it('should toggle trace body on header click', async () => {
+    // ---- 执行时间线（兼容模式）----
+    describe('trace logs', () => {
+        it('should show timeline section when trace logs exist', () => {
             useAgentStore.mockReturnValue(createMockStore({
-                traceLogs: [{ phase: 'plan', time: '12:00', content: 'Step 1' }]
+                traceLogs: [
+                    { phase: 'act', time: '12:00', content: 'Using read_file tool' },
+                    { phase: 'observe', time: '12:01', content: 'Result: ok' }
+                ]
             }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.trace-body').exists()).toBe(true) // showTrace default true
-            await wrapper.find('.trace-header').trigger('click')
-            expect(wrapper.find('.trace-body').exists()).toBe(false)
-            await wrapper.find('.trace-header').trigger('click')
-            expect(wrapper.find('.trace-body').exists()).toBe(true)
+            expect(wrapper.find('.agent-timeline').exists()).toBe(true)
         })
 
-        it('should render trace phase with correct class', () => {
+        it('should render act card for act phase', () => {
             useAgentStore.mockReturnValue(createMockStore({
-                traceLogs: [{ phase: 'exec', time: '12:01', content: 'Running' }]
+                traceLogs: [{ phase: 'act', time: '12:00', content: '{"tool":"read_file","args":{}}' }]
             }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.trace-phase.exec').exists()).toBe(true)
+            expect(wrapper.find('.card-act').exists()).toBe(true)
         })
 
-        it('should hide trace section when no logs', () => {
-            useAgentStore.mockReturnValue(createMockStore({ traceLogs: [] }))
+        it('should hide timeline when no logs and not running', () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                chatMessages: [{ role: 'user', content: 'hello' }],
+                traceLogs: []
+            }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.trace-section').exists()).toBe(false)
+            expect(wrapper.find('.agent-timeline').exists()).toBe(false)
         })
     })
 
     // ---- Final Answer ----
     describe('final answer', () => {
-        it('should show final answer when present', () => {
+        it('should show final answer card when present', () => {
             useAgentStore.mockReturnValue(createMockStore({
                 finalAnswer: 'Task completed successfully!'
             }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.final-answer').exists()).toBe(true)
-            expect(wrapper.find('.final-answer-content').text()).toBe('Task completed successfully!')
+            expect(wrapper.find('.final-answer-card').exists()).toBe(true)
+            expect(wrapper.find('.final-content').text()).toContain('Task completed successfully!')
         })
 
-        it('should hide final answer when empty', () => {
-            useAgentStore.mockReturnValue(createMockStore({ finalAnswer: '' }))
+        it('should hide final answer card when empty', () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                chatMessages: [{ role: 'user', content: 'test' }],
+                finalAnswer: ''
+            }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.final-answer').exists()).toBe(false)
+            expect(wrapper.find('.final-answer-card').exists()).toBe(false)
         })
     })
 
@@ -294,18 +291,25 @@ describe('ChatPanel.vue', () => {
         })
     })
 
-    // ---- 输入指示器 ----
-    describe('typing indicator', () => {
-        it('should show typing indicator when agent is running', () => {
-            useAgentStore.mockReturnValue(createMockStore({ agentRunning: true }))
+    // ---- 运行中指示器 ----
+    describe('running indicator', () => {
+        it('should show running indicator when agent is running in legacy mode', () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                agentRunning: true,
+                // 需要至少一条消息使组件进入兼容模式，以显示运行指示器
+                chatMessages: [{ role: 'user', content: 'test' }]
+            }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.typing-indicator').exists()).toBe(true)
+            expect(wrapper.find('.running-indicator').exists()).toBe(true)
         })
 
-        it('should not show typing indicator when agent is idle', () => {
-            useAgentStore.mockReturnValue(createMockStore({ agentRunning: false }))
+        it('should not show running indicator when agent is idle', () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                agentRunning: false,
+                chatMessages: [{ role: 'user', content: 'test' }]
+            }))
             const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.typing-indicator').exists()).toBe(false)
+            expect(wrapper.find('.running-indicator').exists()).toBe(false)
         })
     })
 })

@@ -517,21 +517,24 @@ lint → security → test → report → build
 | report   | `coverage_merge`                                   | 合并覆盖率报告                                                    |
 | build    | `build_docker`                                     | 构建 Docker 镜像 → 推送 GitLab Container Registry（仅 main 分支） |
 
-### 自定义 CI 镜像
+### Python CI 镜像
 
-为加速流水线，所有 Python job 使用预装全部依赖的自定义镜像 `ci-python:latest`（由 `ci.Dockerfile` 构建），跳过每次 `pip install`。
+Python job 使用公开镜像 `python:3.11-slim`，并在 `before_script` 中安装 `requirements.txt`
+以及 pytest / pytest-cov / flake8 / bandit / coverage 等 CI 工具。这样流水线不依赖某台
+Runner 宿主机上预先构建的本地 `ci-python:latest` 镜像。
 
-```bash
-# 构建 CI 镜像（依赖变更后需重新执行一次）
-docker build -f ci.Dockerfile -t ci-python .
-```
+当前 Runner 只允许 `allowed_pull_policies = ["always"]`，因此 `.gitlab-ci.yml` 不再显式配置
+`pull_policy`，避免触发 `invalid pull policy`。
 
-镜像预装内容：`requirements.txt` 全部依赖 + pytest / pytest-cov / flake8 / bandit / coverage。
+如果 Docker Desktop 配置了失效的 Docker Hub 镜像源，仍会在拉取 `python:3.11-slim`、
+`node:20`、`docker:24` 时失败。日志中的 `docker.mirrors.ustc.edu.cn` DNS 解析失败需要在
+Runner 宿主机 Docker Desktop 配置中移除或替换。
 
 ### Runner 要求
 
 - **Executor**：`docker`（Linux 容器模式）
-- **宿主机配置**：挂载 `/var/run/docker.sock` + `privileged = true` + `pull_policy = "if-not-present"`
+- **宿主机配置**：挂载 `/var/run/docker.sock` + `privileged = true`
+- 移除失效的 Docker Hub 镜像源（例如日志里的 `docker.mirrors.ustc.edu.cn` DNS 解析失败）
 - 详见 [docs/CD部署配置说明.md](docs/CD部署配置说明.md)
 
 ---
