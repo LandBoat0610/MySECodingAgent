@@ -1,4 +1,5 @@
 # tests/test_database.py
+from agent.backend import database
 import os
 import sys
 import sqlite3
@@ -10,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
 
-from agent.backend import database
+
 @pytest.fixture
 def temp_db_path(tmp_path, monkeypatch):
     """替换数据库路径为临时文件，并初始化表结构"""
@@ -18,6 +19,7 @@ def temp_db_path(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DB_PATH", str(db_file))
     database.init_db()
     return db_file
+
 
 def test_init_db_creates_tables(temp_db_path):
     """验证 init_db 能成功创建所有表（包含评测相关表）"""
@@ -33,6 +35,7 @@ def test_init_db_creates_tables(temp_db_path):
     ]
     assert tables == expected
 
+
 def test_projects_schema(temp_db_path):
     """校验 projects 表结构"""
     conn = sqlite3.connect(str(temp_db_path))
@@ -46,6 +49,7 @@ def test_projects_schema(temp_db_path):
     assert columns["created_at"] == "TEXT"
     assert columns["description"] == "TEXT"
 
+
 def test_sessions_foreign_key(temp_db_path):
     """校验 sessions 表定义了外键引用 projects"""
     conn = sqlite3.connect(str(temp_db_path))
@@ -55,6 +59,7 @@ def test_sessions_foreign_key(temp_db_path):
     conn.close()
     assert "FOREIGN KEY" in create_sql
     assert "REFERENCES projects" in create_sql
+
 
 def test_plan_actions_foreign_key(temp_db_path):
     """校验 plan_actions 表定义了外键引用 plans"""
@@ -118,6 +123,7 @@ def test_platform_settings_schema(temp_db_path):
     assert columns["key"] == "TEXT"
     assert columns["value"] == "TEXT"
 
+
 def test_get_connection_commit(temp_db_path):
     """验证 get_connection 在正常退出时能成功提交数据"""
     with database.get_connection() as conn:
@@ -130,6 +136,7 @@ def test_get_connection_commit(temp_db_path):
     row = conn.execute("SELECT id FROM projects WHERE id='p1'").fetchone()
     conn.close()
     assert row is not None
+
 
 def test_get_connection_rollback(temp_db_path):
     """验证 get_connection 在异常时执行回滚"""
@@ -145,6 +152,7 @@ def test_get_connection_rollback(temp_db_path):
     row = conn.execute("SELECT id FROM projects WHERE id='p2'").fetchone()
     conn.close()
     assert row is None
+
 
 def test_row_factory(temp_db_path):
     """验证连接返回的行可以按列名访问"""

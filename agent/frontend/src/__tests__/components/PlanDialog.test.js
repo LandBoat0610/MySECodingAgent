@@ -38,7 +38,7 @@ describe('PlanDialog.vue', () => {
             ]
         }))
         const wrapper = mount(PlanDialog)
-        expect(wrapper.find('.plan-count').text()).toContain('2 step')
+        expect(wrapper.find('.plan-count').text()).toContain('2 步待确认')
         const items = wrapper.findAll('.plan-item')
         expect(items).toHaveLength(2)
         expect(items[0].text()).toContain('Create file structure')
@@ -50,7 +50,7 @@ describe('PlanDialog.vue', () => {
             pendingPlans: [{ id: 'p1', content: 'Step', status: 'pending' }]
         }))
         const wrapper = mount(PlanDialog)
-        expect(wrapper.find('.plan-count').text()).toContain('1 step')
+        expect(wrapper.find('.plan-count').text()).toContain('1 步待确认')
     })
 
     it('should render all four action buttons', () => {
@@ -64,17 +64,17 @@ describe('PlanDialog.vue', () => {
         expect(wrapper.find('.btn-stop').exists()).toBe(true)
     })
 
-    it('should display plan status badge', () => {
+    it('should display plan content', () => {
         useAgentStore.mockReturnValue(createMockStore({
-            pendingPlans: [{ id: 'p1', content: 'Step', status: 'pending', created_at: null }]
+            pendingPlans: [{ id: 'p1', content: 'My plan step', status: 'pending', created_at: null }]
         }))
         const wrapper = mount(PlanDialog)
-        expect(wrapper.find('.plan-status').text()).toBe('pending')
+        expect(wrapper.find('.plan-item-content').text()).toBe('My plan step')
     })
 
     // ---- 操作按钮 ----
     describe('action buttons', () => {
-        it('should call doPlanAction with "agree", then fetchPlans and restoreSessionState', async () => {
+        it('should call doPlanAction with "agree", then fetchPlans', async () => {
             const mockStore = createMockStore({
                 pendingPlans: [{ id: 'plan-1', content: 'Step', status: 'pending' }]
             })
@@ -84,10 +84,7 @@ describe('PlanDialog.vue', () => {
             expect(mockStore.doPlanAction).toHaveBeenCalledWith('plan-1', 'agree')
             // 等待异步完成
             await new Promise(r => setTimeout(r, 10))
-            // doPlanAction internally handles connectWebSocket in real store;
-            // component calls fetchPlans + restoreSessionState after action
             expect(mockStore.fetchPlans).toHaveBeenCalled()
-            expect(mockStore.restoreSessionState).toHaveBeenCalled()
         })
 
         it('should call doPlanAction with "refine"', async () => {
@@ -141,7 +138,7 @@ describe('PlanDialog.vue', () => {
     it('should handle empty pending plans gracefully (no crash)', () => {
         useAgentStore.mockReturnValue(createMockStore({ pendingPlans: [] }))
         const wrapper = mount(PlanDialog)
-        expect(wrapper.find('.plan-count').text()).toContain('0 step')
+        expect(wrapper.find('.plan-count').text()).toContain('0 步待确认')
         expect(wrapper.findAll('.plan-item')).toHaveLength(0)
     })
 })

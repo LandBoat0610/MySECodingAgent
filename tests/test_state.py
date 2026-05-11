@@ -1,12 +1,9 @@
 # tests/test_state.py
+from agent.backend.state import AgentState
 import os
 import sys
-import pytest
-from typing import Dict, Any, List
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from agent.backend.state import AgentState
 
 
 class TestAgentState:

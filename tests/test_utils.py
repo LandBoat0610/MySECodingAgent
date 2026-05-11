@@ -1,3 +1,10 @@
+from agent.backend.utils import (
+    parse_json_object,
+    safe_trim,
+    resolve_workspace_path,
+    tool_result,
+    now_str
+)
 import os
 import sys
 import re
@@ -8,14 +15,6 @@ import pytest
 
 # 导入 agent 模块
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from agent.backend.utils import (
-    parse_json_object,
-    safe_trim,
-    resolve_workspace_path,
-    tool_result,
-    now_str
-)
 
 
 class TestUtils:
@@ -278,14 +277,15 @@ class TestCallbacks:
         from agent.backend.utils import register_log_callback, unregister_log_callback, _LOG_CALLBACKS
 
         calls = []
+
         def cb(item):
             calls.append(item)
 
         register_log_callback(cb)
-        assert cb in _LOG_CALLBACKS
+        assert cb in _LOG_CALLBACKS.values()
 
         unregister_log_callback(cb)
-        assert cb not in _LOG_CALLBACKS
+        assert cb not in _LOG_CALLBACKS.values()
 
     def test_unregister_nonexistent_no_error(self):
         from agent.backend.utils import unregister_log_callback

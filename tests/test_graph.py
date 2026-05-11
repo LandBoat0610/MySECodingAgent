@@ -1,4 +1,15 @@
 # tests/test_graph.py
+from agent.backend.state import AgentState
+from agent.backend.graph import (
+    planner_node,
+    executor_node,
+    check_result_node,
+    modify_code_node,
+    finalize_node,
+    next_step_node,
+    route_after_check,
+    build_graph,
+)
 import os
 import sys
 import json
@@ -10,19 +21,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # 必须在导入 agent 任何模块之前设置假的环境变量，避免 OpenAI 客户端初始化失败
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
-
-from agent.backend.graph import (
-    planner_node,
-    executor_node,
-    check_result_node,
-    modify_code_node,
-    finalize_node,
-    next_step_node,
-    route_after_check,
-    build_graph,
-    run_manual_fallback,
-)
-from agent.backend.state import AgentState
 
 
 # ================== Fixtures ==================
@@ -60,8 +58,10 @@ class TestPlannerNode:
         # mock create_plan, infer_coding_targets, extract_code_context
         def mock_create_plan(task, memory, trace, state=None):
             return ["step_a", "step_b"]
+
         def mock_infer_targets(task, ws, trace, state=None):
             return {"target_file": "t.py", "run_command": "python t.py"}
+
         def mock_extract(target, ws):
             return "code"
         monkeypatch.setattr("agent.backend.graph.create_plan", mock_create_plan)
@@ -169,6 +169,7 @@ class TestExecutorNode:
         mock_client.chat.completions.create.return_value = mock_response
         monkeypatch.setattr("agent.backend.graph.client", mock_client)
         monkeypatch.setattr("agent.backend.graph.build_system_prompt", lambda mem, ws: "sys")
+
         def mock_bash(command):
             return json.dumps({"status": "error", "output": "failed", "returncode": 1})
         monkeypatch.setattr("agent.backend.graph.available_functions", {"execute_bash": mock_bash})
@@ -221,11 +222,13 @@ class TestModifyCodeNode:
 
         def mock_llm_json(sys, user, state=None):
             return {
-            "diagnosis": "syntax error",
-            "updated_code": "print('fixed')",
-            "summary": "corrected",
-        }
+                "diagnosis": "syntax error",
+                "updated_code": "print('fixed')",
+                "summary": "corrected",
+            }
+
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
+
         def mock_resolve(ws, path):
             return str(tmp_path / path)
         monkeypatch.setattr("agent.backend.utils.resolve_workspace_path", mock_resolve)
@@ -240,8 +243,10 @@ class TestModifyCodeNode:
         state["workspace_dir"] = "/tmp"
         state["target_file"] = "main.py"
         state["errors"] = [{"status": "error", "output": "crash"}]
+
         def mock_llm_json(sys, user, state=None):
             raise Exception("LLM error")
+
         monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
         new_state = modify_code_node(state)
         assert new_state["last_tool_result"]["status"] == "error"
@@ -311,6 +316,7 @@ def test_build_graph_when_langgraph_available(monkeypatch):
     monkeypatch.setattr("agent.backend.graph.StateGraph", mock_graph)
     graph = build_graph()
     assert graph is not None  # 会返回 compile() 的结果
+
 
 def test_build_graph_when_langgraph_unavailable(monkeypatch):
     monkeypatch.setattr("agent.backend.graph.LANGGRAPH_AVAILABLE", False)

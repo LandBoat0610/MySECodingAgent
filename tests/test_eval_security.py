@@ -1,15 +1,13 @@
 # tests/test_eval_security.py
 """测试 eval_security 模块：危险模式扫描与安全评估。"""
-import os
-import sys
-import pytest
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from agent.backend.eval_security import (
     compute_security_assessment,
     gather_code_blob_for_security_scan,
 )
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 class TestComputeSecurityAssessment:

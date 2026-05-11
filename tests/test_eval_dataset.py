@@ -1,5 +1,11 @@
 # tests/test_eval_dataset.py
 """测试 eval_dataset 模块：数据集规范化、序列化与解析。"""
+from agent.backend.eval_dataset import (
+    normalize_dataset_payload,
+    canonical_dataset_document,
+    load_dataset_items_from_path,
+    parse_upload_json_bytes,
+)
 import json
 import os
 import sys
@@ -7,13 +13,6 @@ import pytest
 from tempfile import NamedTemporaryFile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from agent.backend.eval_dataset import (
-    normalize_dataset_payload,
-    canonical_dataset_document,
-    load_dataset_items_from_path,
-    parse_upload_json_bytes,
-)
 
 
 class TestNormalizeDatasetPayload:

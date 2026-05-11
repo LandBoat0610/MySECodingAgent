@@ -1,22 +1,19 @@
 # tests/test_platform_settings.py
 """测试 platform_settings 模块：Agent 配置的读写与合并逻辑。"""
+from agent.backend.platform_settings import (
+    get_agent_config,
+    set_agent_config,
+)
 import json
 import os
 import sys
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # 必须在导入 agent 任何模块之前设置假的环境变量
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
-
-from agent.backend.platform_settings import (
-    get_agent_config,
-    set_agent_config,
-    AGENT_CONFIG_KEY,
-)
 
 
 class TestGetAgentConfig:

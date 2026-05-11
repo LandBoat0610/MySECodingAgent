@@ -3,14 +3,12 @@
 import os
 import sys
 import tempfile
-import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
 class TestEvalStorage:
     def test_ensure_eval_storage_dirs_creates_directories(self, monkeypatch):
-        import importlib
         import agent.backend.eval_storage as es
 
         with tempfile.TemporaryDirectory() as tmpdir:
