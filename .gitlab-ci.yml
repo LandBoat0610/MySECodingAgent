@@ -23,7 +23,9 @@ variables:
 # 1. 代码风格检查
 flake8_lint:
   stage: lint
-  image: ${CI_TEST_IMAGE}
+  image:
+    name: ${CI_TEST_IMAGE}
+    pull_policy: if-not-present
   script:
     - python -m flake8 agent/ tests/ --max-line-length=120
   allow_failure: true
@@ -32,7 +34,9 @@ flake8_lint:
 # 2. 安全扫描
 bandit_scan:
   stage: security
-  image: ${CI_TEST_IMAGE}
+  image:
+    name: ${CI_TEST_IMAGE}
+    pull_policy: if-not-present
   script:
     - python -m bandit -r agent/ -ll || echo "Bandit scan skipped"
   allow_failure: true
@@ -42,11 +46,12 @@ bandit_scan:
 # 3. 单元测试 — 使用自定义镜像，不再重复安装依赖
 # ============================================================
 .test_base:
-  # 👇 关键修改：使用我们构建的自定义镜像
-  image: $CI_TEST_IMAGE
-  # ❌ 删除 before_script 中的 pip install 命令（依赖已在镜像中）
+  # ci-python:latest 是本地构建的镜像，pull_policy 设为 if-not-present
+  # 避免 Runner 尝试从远程仓库拉取而失败
+  image:
+    name: $CI_TEST_IMAGE
+    pull_policy: if-not-present
   before_script:
-    # 可选：如果有额外需要在运行时安装的包（例如某个测试需要的临时工具），可以保留，但一般不需要
     - echo "Using prebuilt CI image with all dependencies."
 
 pytest_backend:
@@ -159,7 +164,9 @@ vitest_frontend:
 # 5. 合并覆盖率
 coverage_merge:
   stage: report
-  image: ${CI_TEST_IMAGE}
+  image:
+    name: ${CI_TEST_IMAGE}
+    pull_policy: if-not-present
   before_script:
     - echo "使用预装依赖的 CI 镜像"
   script:
