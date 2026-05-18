@@ -3,7 +3,9 @@ import os
 import re
 import json
 import html
+import signal
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 from typing import Dict, Any
@@ -12,6 +14,7 @@ from agent.backend.config import BLOCKED_BASH_PATTERNS
 from agent.backend.utils import ensure_workspace, resolve_workspace_path, tool_result, safe_trim
 
 CURRENT_WORKSPACE_DIR = None
+CURRENT_CANCEL_EVENT = None
 
 tools = [
     {
@@ -99,29 +102,92 @@ def execute_bash(command: str) -> str:
             if re.search(pattern, command):
                 return tool_result("error", f"Blocked potentially dangerous command: {command}")
 
-        result = subprocess.run(
+        cancel_event = CURRENT_CANCEL_EVENT
+        if cancel_event and cancel_event.is_set():
+            return tool_result("error", "Command cancelled by user", path=workspace_dir, returncode=130)
+
+        if not cancel_event:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=workspace_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                executable=os.environ.get("COMSPEC", None),
+                timeout=20,
+            )
+            combined = f"STDOUT:\n{safe_trim(completed.stdout)}\n\nSTDERR:\n{safe_trim(completed.stderr)}"
+            return tool_result(
+                "success" if completed.returncode == 0 else "error",
+                combined,
+                path=workspace_dir,
+                returncode=completed.returncode,
+                meta={"command": command},
+            )
+
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=workspace_dir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=20,
             executable=os.environ.get("COMSPEC", None),
+            start_new_session=True,
         )
-        combined = f"STDOUT:\n{safe_trim(result.stdout)}\n\nSTDERR:\n{safe_trim(result.stderr)}"
+        deadline = time.monotonic() + 20
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                _terminate_process(proc)
+                stdout, stderr = proc.communicate(timeout=2)
+                combined = f"STDOUT:\n{safe_trim(stdout)}\n\nSTDERR:\n{safe_trim(stderr)}"
+                return tool_result("error", f"Command cancelled by user\n\n{combined}", path=workspace_dir, returncode=130)
+            if time.monotonic() > deadline:
+                _terminate_process(proc)
+                stdout, stderr = proc.communicate(timeout=2)
+                combined = f"STDOUT:\n{safe_trim(stdout)}\n\nSTDERR:\n{safe_trim(stderr)}"
+                return tool_result("error", f"Command timed out\n\n{combined}", path=workspace_dir, returncode=124)
+            time.sleep(0.2)
+
+        stdout, stderr = proc.communicate()
+        returncode = proc.returncode
+        combined = f"STDOUT:\n{safe_trim(stdout)}\n\nSTDERR:\n{safe_trim(stderr)}"
         return tool_result(
-            "success" if result.returncode == 0 else "error",
+            "success" if returncode == 0 else "error",
             combined,
             path=workspace_dir,
-            returncode=result.returncode,
+            returncode=returncode,
             meta={"command": command},
         )
-    except subprocess.TimeoutExpired:
-        return tool_result("error", "Command timed out", path=CURRENT_WORKSPACE_DIR, returncode=124)
+    except subprocess.TimeoutExpired as e:
+        return tool_result("error", f"Command timed out: {e}", path=CURRENT_WORKSPACE_DIR)
     except Exception as e:
         return tool_result("error", str(e), path=CURRENT_WORKSPACE_DIR)
+
+
+def _terminate_process(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=1)
+    except Exception:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def read_file(path: str) -> str:

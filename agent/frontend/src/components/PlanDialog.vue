@@ -21,6 +21,13 @@
     </div>
     <div class="plan-dialog-footer">
       <span class="plan-prompt">请确认是否按此计划执行：</span>
+      <div v-if="showRefineInput" class="refine-box">
+        <textarea
+          v-model="refineFeedback"
+          rows="3"
+          placeholder="告诉 Agent 希望如何修改计划，例如：减少步骤、先检查现有代码、不要改动后端..."
+        ></textarea>
+      </div>
       <div class="plan-actions">
         <button
           class="btn btn-agree"
@@ -31,10 +38,18 @@
         </button>
         <button
           class="btn btn-refine"
-          @click="handleAction('refine')"
+          @click="handleRefineClick"
           :disabled="actionLoading"
         >
-          🔄 重新规划
+          🔄 {{ showRefineInput ? '提交修改' : '修改计划' }}
+        </button>
+        <button
+          v-if="showRefineInput"
+          class="btn btn-cancel-refine"
+          @click="cancelRefine"
+          :disabled="actionLoading"
+        >
+          取消
         </button>
         <button
           class="btn btn-skip"
@@ -61,6 +76,8 @@ import { useAgentStore } from '../stores/agent.js'
 
 const store = useAgentStore()
 const actionLoading = ref(false)
+const showRefineInput = ref(false)
+const refineFeedback = ref('')
 
 async function handleAction(action) {
   if (store.pendingPlans.length === 0) return
@@ -76,6 +93,31 @@ async function handleAction(action) {
   } finally {
     actionLoading.value = false
   }
+}
+
+async function handleRefineClick() {
+  if (!showRefineInput.value) {
+    showRefineInput.value = true
+    return
+  }
+  if (store.pendingPlans.length === 0) return
+  actionLoading.value = true
+  const plan = store.pendingPlans[0]
+  try {
+    await store.doPlanAction(plan.id, 'refine', refineFeedback.value.trim())
+    refineFeedback.value = ''
+    showRefineInput.value = false
+    await store.fetchPlans()
+  } catch (e) {
+    // error handled in store
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+function cancelRefine() {
+  showRefineInput.value = false
+  refineFeedback.value = ''
 }
 
 function formatDate(iso) {
@@ -173,10 +215,11 @@ function formatDate(iso) {
 .plan-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .btn {
-  flex: 1;
+  flex: 1 1 120px;
   padding: 7px 0;
   border-radius: 6px;
   font-size: 12px;
@@ -185,6 +228,21 @@ function formatDate(iso) {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+
+.refine-box {
+  margin-bottom: 8px;
+}
+
+.refine-box textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 68px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .btn:disabled {
@@ -204,6 +262,15 @@ function formatDate(iso) {
 .btn-refine {
   background: rgba(137, 180, 250, 0.2);
   color: var(--accent);
+}
+
+.btn-cancel-refine {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.btn-cancel-refine:hover:not(:disabled) {
+  color: var(--text-primary);
 }
 
 .btn-refine:hover:not(:disabled) {

@@ -36,7 +36,7 @@
       <div v-if="isEmpty" class="chat-empty">
         <div class="empty-icon">🤖</div>
         <div class="empty-title">Agent Platform</div>
-        <div class="empty-desc">选择项目和会话，发送消息开始与 Agent 协作。</div>
+        <div class="empty-desc">选择项目后直接发送消息，系统会自动创建对话。</div>
       </div>
 
       <!-- ══ 多轮模式：每轮独立展示 ══ -->
@@ -368,12 +368,12 @@
         placeholder="描述你的任务，按 Enter 发送…"
         rows="2"
         @keydown.enter.exact.prevent="handleSend"
-        :disabled="!store.selectedSessionId || store.agentRunning"
+        :disabled="!store.selectedProjectId || store.agentRunning"
       ></textarea>
       <button
         class="btn btn-primary send-btn"
         @click="handleSend"
-        :disabled="!store.selectedSessionId || !inputMessage.trim() || store.agentRunning"
+        :disabled="!store.selectedProjectId || !inputMessage.trim() || store.agentRunning"
       >
         发送
       </button>
@@ -663,7 +663,7 @@ function parseFinalAnswer(raw) {
 
 // ── 事件处理 ─────────────────────────────────────────────
 async function handleSend() {
-  if (!inputMessage.value.trim() || !store.selectedSessionId || store.agentRunning) return
+  if (!inputMessage.value.trim() || !store.selectedProjectId || store.agentRunning) return
   const msg = inputMessage.value.trim()
   inputMessage.value = ''
   try {

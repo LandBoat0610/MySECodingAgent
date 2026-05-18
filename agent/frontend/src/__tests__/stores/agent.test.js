@@ -17,13 +17,22 @@ vi.mock('../../api/index.js', () => ({
     createProject: vi.fn(),
     getSessions: vi.fn(),
     createSession: vi.fn(),
+    updateSession: vi.fn(),
+    deleteSession: vi.fn(),
+    clearSession: vi.fn(),
     getSessionState: vi.fn(),
     sendChat: vi.fn(),
     getPlans: vi.fn(),
     planAction: vi.fn(),
     getFileTree: vi.fn(),
     stopSession: vi.fn(),
-    createWebSocket: vi.fn()
+    createWebSocket: vi.fn(),
+    getToolSettings: vi.fn(),
+    updateToolSettings: vi.fn(),
+    getSkills: vi.fn(),
+    createSkill: vi.fn(),
+    updateSkill: vi.fn(),
+    deleteSkill: vi.fn()
 }))
 
 // Mock persistence 模块
@@ -97,8 +106,17 @@ describe('agent store', () => {
         api.getFileTree.mockResolvedValue([])
         api.createProject.mockResolvedValue({ id: 'new-proj', name: 'New' })
         api.createSession.mockResolvedValue({ id: 'new-sess', title: 'New Session' })
+        api.updateSession.mockResolvedValue({ id: 's1', title: 'Updated', pinned: false, status: 'idle' })
+        api.deleteSession.mockResolvedValue({ status: 'deleted' })
+        api.clearSession.mockResolvedValue({ status: 'cleared' })
         api.sendChat.mockResolvedValue({ status: 'running' })
         api.planAction.mockResolvedValue({ status: 'approved' })
+        api.getToolSettings.mockResolvedValue({ tools: [] })
+        api.updateToolSettings.mockResolvedValue({ tools: [] })
+        api.getSkills.mockResolvedValue({ skills: [] })
+        api.createSkill.mockResolvedValue({ id: 'sk1', name: 'Skill', content: 'Do this', enabled: true })
+        api.updateSkill.mockResolvedValue({ id: 'sk1', name: 'Skill 2', content: 'Do that', enabled: true })
+        api.deleteSkill.mockResolvedValue({ status: 'deleted' })
     })
 
     // ============================================================
@@ -566,6 +584,45 @@ describe('agent store', () => {
             expect(store.sessionStatus).toBe('running')
         })
 
+        it('should auto-create a session before sending the first message', async () => {
+            const store = createStore()
+            store.selectedProjectId = 'p1'
+            store.selectedSessionId = null
+            api.createSession.mockResolvedValue({
+                id: 'new-sess',
+                project_id: 'p1',
+                title: 'Generated title',
+                status: 'idle'
+            })
+            api.sendChat.mockResolvedValue({ session_id: 'new-sess', status: 'running' })
+
+            await store.doSendChat('Build the login page')
+
+            expect(api.createSession).toHaveBeenCalledWith('p1', { initial_message: 'Build the login page' })
+            expect(store.selectedSessionId).toBe('new-sess')
+            expect(store.sessions[0].title).toBe('Generated title')
+            expect(api.sendChat).toHaveBeenCalledWith('p1', 'new-sess', 'Build the login page')
+        })
+
+        it('should start a new session when sending after the current session was stopped', async () => {
+            const store = createStore()
+            store.selectedProjectId = 'p1'
+            store.selectedSessionId = 'stopped-sess'
+            store.sessionStatus = 'stopped'
+            api.createSession.mockResolvedValue({
+                id: 'new-sess',
+                project_id: 'p1',
+                title: 'New title',
+                status: 'idle'
+            })
+            api.sendChat.mockResolvedValue({ session_id: 'new-sess', status: 'running' })
+
+            await store.doSendChat('Continue with a new task')
+
+            expect(api.createSession).toHaveBeenCalledWith('p1', { initial_message: 'Continue with a new task' })
+            expect(api.sendChat).toHaveBeenCalledWith('p1', 'new-sess', 'Continue with a new task')
+        })
+
         it('should remove user message and throw on failure', async () => {
             const store = createStore()
             store.selectedProjectId = 'p1'
@@ -591,7 +648,7 @@ describe('agent store', () => {
 
             await store.doPlanAction('plan-1', 'agree')
 
-            expect(api.planAction).toHaveBeenCalledWith('p1', 's1', 'plan-1', 'agree')
+            expect(api.planAction).toHaveBeenCalledWith('p1', 's1', 'plan-1', 'agree', '')
             expect(store.plans[0].status).toBe('approved')
         })
 

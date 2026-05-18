@@ -24,7 +24,8 @@ class DeleteProjectResponse(BaseModel):
 
 
 class SessionCreateRequest(BaseModel):
-    title: Optional[str] = "New Session"
+    title: Optional[str] = None
+    initial_message: Optional[str] = None
 
 
 class SessionResponse(BaseModel):
@@ -33,6 +34,53 @@ class SessionResponse(BaseModel):
     title: str
     created_at: str
     status: str
+    pinned: bool = False
+
+
+class SessionUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+class SessionActionResponse(BaseModel):
+    status: str
+    session_id: str
+
+
+class ToolSetting(BaseModel):
+    name: str
+    enabled: bool
+
+
+class ToolSettingsResponse(BaseModel):
+    tools: List[ToolSetting]
+
+
+class ToolSettingsUpdateRequest(BaseModel):
+    tools: Dict[str, bool]
+
+
+class SkillItem(BaseModel):
+    id: str
+    name: str
+    content: str
+    enabled: bool = True
+
+
+class SkillCreateRequest(BaseModel):
+    name: str
+    content: str
+    enabled: bool = True
+
+
+class SkillUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class SkillListResponse(BaseModel):
+    skills: List[SkillItem]
 
 
 class StateResponse(BaseModel):
@@ -69,6 +117,7 @@ class PlanAction(str, Enum):
 
 class PlanActionRequest(BaseModel):
     action: PlanAction
+    feedback: Optional[str] = None
 
 
 class PlanActionResponse(BaseModel):

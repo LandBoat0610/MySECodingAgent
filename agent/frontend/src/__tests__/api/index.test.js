@@ -103,6 +103,15 @@ describe('API layer', () => {
             )
             expect(result).toEqual({ status: 'approved' })
         })
+
+        it('should include feedback when provided', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'refining' } })
+            await api.planAction('proj-1', 'sess-1', 'plan-1', 'refine', '先检查文件')
+            expect(axios.post).toHaveBeenCalledWith(
+                '/projects/proj-1/sessions/sess-1/plan/plan-1/action',
+                { action: 'refine', feedback: '先检查文件' }
+            )
+        })
     })
 
     describe('getFileTree', () => {

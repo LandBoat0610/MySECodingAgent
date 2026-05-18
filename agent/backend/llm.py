@@ -1,16 +1,59 @@
 # 对接 OpenAI 的相关接口，包含代码文件的推演逻辑
+import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 from openai import OpenAI
 from agent.backend.config import get_effective_model
+from agent.backend.platform_settings import get_enabled_skills
 from agent.backend.runtime_metrics import record_llm_usage
 from agent.backend.utils import parse_json_object, load_prompts, log_state, resolve_workspace_path, safe_trim
+
+load_dotenv()
 
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
     base_url=os.environ.get("OPENAI_BASE_URL")
 )
+
+
+def fallback_session_title(message: str) -> str:
+    text = " ".join((message or "").split())
+    if not text:
+        return "New Session"
+    return text[:32].rstrip() + ("..." if len(text) > 32 else "")
+
+
+def generate_session_title(message: str) -> str:
+    """Generate a short conversation title from the user's first message."""
+    fallback = fallback_session_title(message)
+    if not (message or "").strip():
+        return fallback
+    try:
+        response = client.chat.completions.create(
+            model=get_effective_model(),
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You name coding-agent conversations. Return only a concise title, "
+                        "no quotes, no markdown, no punctuation-only title. Use the same "
+                        "language as the user when possible. Keep it within 12 Chinese "
+                        "characters or 6 English words."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            temperature=0.2,
+            max_tokens=32,
+        )
+        title = (response.choices[0].message.content or "").strip()
+        title = title.strip("\"'“”‘’`").splitlines()[0].strip()
+        return title[:40] if title else fallback
+    except Exception:
+        return fallback
 
 
 def llm_json(system_prompt: str, user_prompt: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -37,6 +80,12 @@ def build_system_prompt(memory: str, workspace_dir: str) -> str:
     role = sys_config.get("role", "You are Agent-Plus, an autonomous coding and research agent.")
     principles = sys_config.get("principles", "Please write robust code.")
     constraints = sys_config.get("constraints", "Stay inside the workspace.")
+    skills = get_enabled_skills()
+    skills_block = ""
+    if skills:
+        skills_block = "\n\nUser-added skills:\n" + "\n\n".join(
+            f"### {skill['name']}\n{skill['content']}" for skill in skills
+        )
 
     return f"""{role}
 
@@ -44,6 +93,7 @@ principles:
 {principles}
 Constraints:
 {constraints}
+{skills_block}
 Workspace:
 {workspace_dir}
 Memory:
@@ -65,21 +115,71 @@ def create_plan(
             "system",
             "你是一个自动智能体的任务规划器。请务必返回 JSON 格式，包含 'steps' 数组字段。",
         )
+        system_prompt += (
+            "\n\nPlan display rules:"
+            "\n- Each item in steps must be a short user-facing natural-language sentence."
+            "\n- Do not include JSON, code blocks, tool call names, function arguments, diffs, or internal metadata."
+            "\n- Describe intent and outcome, not raw implementation parameters."
+            "\n- Return 3-6 steps maximum."
+        )
         template = planner_config.get("template", "用户任务:\n{user_task}")
         user_prompt = template.format(user_task=task)
         if memory:
             user_prompt += f"\n\n过往记忆:\n{memory}"
+        feedback = (state or {}).get("plan_feedback", "")
+        if feedback:
+            user_prompt += f"\n\n用户对计划的修改要求:\n{feedback}"
 
         data = llm_json(system_prompt, user_prompt, state)
         steps = data.get("steps", [])
         if not isinstance(steps, list) or not steps:
             return [task]
-        result = [str(s).strip() for s in steps if str(s).strip()]
+        result = [_normalize_plan_step(s) for s in steps]
+        result = [s for s in result if s]
         log_state(trace, "plan_result", "\n".join(f"{i + 1}. {s}" for i, s in enumerate(result)))
         return result or [task]
     except Exception as e:
         log_state(trace, "plan_error", str(e))
         return [task]
+
+
+def _normalize_plan_step(step: Any) -> str:
+    if isinstance(step, str):
+        text = step.strip()
+        if text.startswith(("{", "[")):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list) and parsed:
+                    return _normalize_plan_step(parsed[0])
+                if isinstance(parsed, dict):
+                    return _normalize_plan_step(parsed)
+            except Exception:
+                pass
+    elif isinstance(step, dict):
+        for key in ("description", "summary", "task", "goal", "title", "step"):
+            value = step.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                break
+        else:
+            action = str(step.get("action") or step.get("tool") or "").replace("_", " ").strip()
+            target = str(step.get("target") or step.get("path") or step.get("file") or "").strip()
+            text = f"{action} {target}".strip() or "Complete one planned task."
+    else:
+        text = str(step).strip()
+
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"\{[\s\S]*?\}", " ", text)
+    text = re.sub(r"\[[\s\S]*?\]", " ", text)
+    text = re.sub(r"\b(command|args|arguments|content|tool_call|function_call|returncode|stdout|stderr)\s*[:=]\s*\\?\"?.*?(,|$)", " ", text, flags=re.I)
+    text = " ".join(text.split())
+    text = text.strip("-:：,，. {}[]")
+
+    if not text:
+        return ""
+    if len(text) > 120:
+        text = text[:117].rstrip() + "..."
+    return text
 
 
 def infer_coding_targets(

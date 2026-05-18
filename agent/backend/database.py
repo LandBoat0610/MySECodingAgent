@@ -24,6 +24,16 @@ def _migrate_eval_results_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE eval_task_results ADD COLUMN {col} {ddl}")
 
 
+def _migrate_sessions_columns(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.execute("PRAGMA table_info(sessions)")
+        names = {row[1] for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if "pinned" not in names:
+        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+
+
 def init_db():
     with get_connection() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -42,6 +52,7 @@ def init_db():
                 created_at TEXT NOT NULL,
                 state_snapshot TEXT DEFAULT '{}',
                 status TEXT DEFAULT 'idle',
+                pinned INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(project_id) REFERENCES projects(id)
             );
             CREATE TABLE IF NOT EXISTS plans (
@@ -111,6 +122,7 @@ def init_db():
                 UNIQUE(task_id, item_index)
             );
         """)
+        _migrate_sessions_columns(conn)
         _migrate_eval_results_columns(conn)
     ensure_eval_storage_dirs()
     print("Database initialized.")

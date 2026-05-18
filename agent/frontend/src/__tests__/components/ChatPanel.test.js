@@ -18,6 +18,7 @@ vi.mock('../../components/PlanDialog.vue', () => ({
 
 function createMockStore(overrides = {}) {
     return {
+        selectedProjectId: 'p1',
         selectedSessionId: 's1',
         agentRunning: false,
         sessionStatus: 'idle',
@@ -202,8 +203,18 @@ describe('ChatPanel.vue', () => {
             expect(mockStore.doSendChat).not.toHaveBeenCalled()
         })
 
-        it('should not call doSendChat when no session selected', async () => {
+        it('should allow sending when project is selected but no session exists yet', async () => {
             const mockStore = createMockStore({ selectedSessionId: null })
+            useAgentStore.mockReturnValue(mockStore)
+            const wrapper = mount(ChatPanel)
+            const textarea = wrapper.find('.chat-input')
+            await textarea.setValue('Message')
+            await wrapper.find('.send-btn').trigger('click')
+            expect(mockStore.doSendChat).toHaveBeenCalledWith('Message')
+        })
+
+        it('should not call doSendChat when no project selected', async () => {
+            const mockStore = createMockStore({ selectedProjectId: null, selectedSessionId: null })
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ChatPanel)
             const textarea = wrapper.find('.chat-input')

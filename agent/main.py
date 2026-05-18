@@ -1,6 +1,7 @@
 # main.py
 from agent.backend.utils import sync_workspace_file_back
 from agent.backend.graph import build_graph, run_manual_fallback
+from agent.backend.llm import fallback_session_title, generate_session_title
 import threading
 import os
 import uuid
@@ -17,6 +18,8 @@ from agent.backend.schemas import (
     ProjectResponse,
     SessionCreateRequest,
     SessionResponse,
+    SessionUpdateRequest,
+    SessionActionResponse,
     StateResponse,
     ChatRequest,
     ChatResponse,
@@ -27,8 +30,23 @@ from agent.backend.schemas import (
     FileContentResponse,
     AgentConfigResponse,
     AgentConfigUpdateRequest,
+    ToolSettingsResponse,
+    ToolSettingsUpdateRequest,
+    SkillCreateRequest,
+    SkillUpdateRequest,
+    SkillItem,
+    SkillListResponse,
 )
-from agent.backend.platform_settings import get_agent_config, set_agent_config
+from agent.backend.platform_settings import (
+    get_agent_config,
+    set_agent_config,
+    get_tool_settings,
+    set_tool_settings,
+    get_skills,
+    create_skill,
+    update_skill,
+    delete_skill,
+)
 from agent.backend.eval_router import router as eval_router
 
 load_dotenv()
@@ -70,6 +88,50 @@ def update_agent_config(req: AgentConfigUpdateRequest):
         return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
     cfg = set_agent_config(payload)
     return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+
+
+@app.get("/settings/tools", response_model=ToolSettingsResponse)
+def read_tool_settings():
+    settings = get_tool_settings()
+    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+
+
+@app.put("/settings/tools", response_model=ToolSettingsResponse)
+def update_tool_settings(req: ToolSettingsUpdateRequest):
+    settings = set_tool_settings(req.tools)
+    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+
+
+@app.get("/settings/skills", response_model=SkillListResponse)
+def read_skills():
+    return SkillListResponse(skills=[SkillItem(**skill) for skill in get_skills()])
+
+
+@app.post("/settings/skills", response_model=SkillItem, status_code=201)
+def create_skill_endpoint(req: SkillCreateRequest):
+    try:
+        return SkillItem(**create_skill(req.model_dump()))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.patch("/settings/skills/{skill_id}", response_model=SkillItem)
+def update_skill_endpoint(skill_id: str, req: SkillUpdateRequest):
+    try:
+        return SkillItem(**update_skill(skill_id, req.model_dump(exclude_unset=True)))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Skill not found") from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.delete("/settings/skills/{skill_id}")
+def delete_skill_endpoint(skill_id: str):
+    try:
+        delete_skill(skill_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Skill not found") from None
+    return {"status": "deleted", "skill_id": skill_id}
 
 
 WORKSPACES_ROOT = os.path.abspath("workspaces")
@@ -155,11 +217,16 @@ def list_sessions(project_id: str):
         if not proj:
             raise HTTPException(status_code=404, detail="项目不存在")
         rows = conn.execute(
-            "SELECT id, project_id, title, created_at, status "
-            "FROM sessions WHERE project_id = ? ORDER BY created_at DESC",
+            "SELECT id, project_id, title, created_at, status, pinned "
+            "FROM sessions WHERE project_id = ? ORDER BY pinned DESC, created_at DESC",
             (project_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    sessions = []
+    for row in rows:
+        data = dict(row)
+        data["pinned"] = bool(data.get("pinned", False))
+        sessions.append(data)
+    return sessions
 
 # ------------------ 4. 新建会话 ------------------
 
@@ -168,6 +235,14 @@ def list_sessions(project_id: str):
 def create_session(project_id: str, req: SessionCreateRequest):
     now = datetime.now().isoformat()
     session_id = uuid.uuid4().hex[:8]
+    requested_title = (req.title or "").strip()
+    should_generate_title = bool(req.initial_message and not requested_title)
+    if requested_title:
+        title = requested_title
+    elif req.initial_message:
+        title = fallback_session_title(req.initial_message)
+    else:
+        title = "New Session"
 
     with get_connection() as conn:
         proj = conn.execute("SELECT id, workspace_path FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -210,16 +285,140 @@ def create_session(project_id: str, req: SessionCreateRequest):
             "INSERT INTO sessions "
             "(id, project_id, title, created_at, state_snapshot, status) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, project_id, req.title, now, json.dumps(initial_state, ensure_ascii=False), "idle"),
+            (session_id, project_id, title, now, json.dumps(initial_state, ensure_ascii=False), "idle"),
         )
+
+    if should_generate_title:
+        threading.Thread(
+            target=_generate_and_save_session_title,
+            args=(project_id, session_id, req.initial_message),
+            daemon=True,
+        ).start()
 
     return SessionResponse(
         id=session_id,
         project_id=project_id,
-        title=req.title,
+        title=title,
         created_at=now,
         status="idle",
+        pinned=False,
     )
+
+
+@app.patch("/projects/{project_id}/sessions/{sid}", response_model=SessionResponse)
+def update_session(project_id: str, sid: str, req: SessionUpdateRequest):
+    fields = []
+    values = []
+    if req.title is not None:
+        title = req.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="会话标题不能为空")
+        fields.append("title = ?")
+        values.append(title)
+    if req.pinned is not None:
+        fields.append("pinned = ?")
+        values.append(1 if req.pinned else 0)
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可更新的字段")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        conn.execute(
+            f"UPDATE sessions SET {', '.join(fields)} WHERE id = ? AND project_id = ?",
+            (*values, sid, project_id),
+        )
+        updated = conn.execute(
+            "SELECT id, project_id, title, created_at, status, pinned FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+
+    data = dict(updated)
+    data["pinned"] = bool(data["pinned"])
+    return SessionResponse(**data)
+
+
+@app.delete("/projects/{project_id}/sessions/{sid}", response_model=SessionActionResponse)
+def delete_session(project_id: str, sid: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+        conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM sessions WHERE id = ? AND project_id = ?", (sid, project_id))
+
+    cleanup_cancel_event(sid)
+    runner = _agent_runners.pop(sid, None)
+    if runner and runner.is_alive():
+        runner.cancel_event.set()
+    return SessionActionResponse(status="deleted", session_id=sid)
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/clear", response_model=SessionActionResponse)
+def clear_session(project_id: str, sid: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        state = json.loads(row["state_snapshot"])
+        state.update({
+            "task": "",
+            "messages": [],
+            "status": "idle",
+            "errors": [],
+            "used_tools": [],
+            "result_history": [],
+            "modified_files": [],
+            "task_list": [],
+            "current_task_index": 0,
+            "current_task": "",
+            "last_tool_result": {},
+            "last_execution": {},
+            "final_answer": "",
+            "trace": [],
+            "runtime_metrics": {
+                "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                "llm_calls": 0,
+                "tool_calls": [],
+            },
+        })
+        conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+        conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = 'idle' WHERE id = ? AND project_id = ?",
+            (json.dumps(state, ensure_ascii=False), sid, project_id),
+        )
+
+    cleanup_cancel_event(sid)
+    runner = _agent_runners.pop(sid, None)
+    if runner and runner.is_alive():
+        runner.cancel_event.set()
+    return SessionActionResponse(status="cleared", session_id=sid)
+
+
+def _generate_and_save_session_title(project_id: str, session_id: str, message: str) -> None:
+    title = generate_session_title(message)
+    if not title:
+        return
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? AND project_id = ?",
+                (title, session_id, project_id),
+            )
+    except Exception as e:
+        print(f"Warning: failed to generate session title for {session_id}: {e}")
 
 # ------------------ 5. 获取会话状态快照 ------------------
 
@@ -253,8 +452,11 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        row_data = dict(row)
+        if row_data.get("status") == "stopped":
+            raise HTTPException(status_code=409, detail="会话已停止，请新建对话后继续")
 
-        state = json.loads(row["state_snapshot"])
+        state = json.loads(row_data["state_snapshot"])
         state["task"] = req.message
         state["messages"].append({"role": "user", "content": req.message})
         state["status"] = "running"
@@ -363,20 +565,19 @@ class AgentRunner:
             print(f"Agent runner error: {e}")
         finally:
             self.done.set()
-            if self.run_id != my_run_id:
-                return
-            with get_connection() as conn:
-                row = conn.execute(
-                    "SELECT status FROM sessions WHERE id = ?",
-                    (self.sid,),
-                ).fetchone()
-                if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
-                    conn.execute(
-                        "UPDATE sessions SET status = 'completed' "
-                        "WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+            if self.run_id == my_run_id:
+                with get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT status FROM sessions WHERE id = ?",
                         (self.sid,),
-                    )
-            cleanup_cancel_event(self.sid)
+                    ).fetchone()
+                    if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
+                        conn.execute(
+                            "UPDATE sessions SET status = 'completed' "
+                            "WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+                            (self.sid,),
+                        )
+                cleanup_cancel_event(self.sid)
 
 
 _agent_runners: Dict[str, AgentRunner] = {}
@@ -438,6 +639,26 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             await websocket.send_json({"phase": "start", "message": "Agent 正在执行..."})
 
         while not runner.done.is_set():
+            if runner.cancel_event.is_set():
+                await websocket.send_json({
+                    "phase": "cancelled",
+                    "message": "任务已停止",
+                    "status": "stopped",
+                })
+                return
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT status FROM sessions WHERE id = ?",
+                    (sid,),
+                ).fetchone()
+            if row and row["status"] == "stopped":
+                runner.cancel_event.set()
+                await websocket.send_json({
+                    "phase": "cancelled",
+                    "message": "任务已停止",
+                    "status": "stopped",
+                })
+                return
             await asyncio.sleep(0.5)
 
         with get_connection() as conn:
@@ -447,12 +668,20 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             ).fetchone()
         final_state = json.loads(row["state_snapshot"]) if row else {}
 
-        await websocket.send_json({
-            "phase": "done",
-            "message": "任务完成",
-            "final_answer": final_state.get("final_answer", ""),
-            "status": final_state.get("status"),
-        })
+        if final_state.get("status") == "stopped":
+            await websocket.send_json({
+                "phase": "cancelled",
+                "message": "任务已停止",
+                "final_answer": final_state.get("final_answer", ""),
+                "status": "stopped",
+            })
+        else:
+            await websocket.send_json({
+                "phase": "done",
+                "message": "任务完成",
+                "final_answer": final_state.get("final_answer", ""),
+                "status": final_state.get("status"),
+            })
         await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
@@ -540,6 +769,14 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
             conn.execute(
                 "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
                 (sid,),
+            )
+        if req.action == "refine":
+            feedback = (req.feedback or "").strip()
+            state = json.loads(row["state_snapshot"] or "{}")
+            state["plan_feedback"] = feedback
+            conn.execute(
+                "UPDATE sessions SET state_snapshot = ? WHERE id = ?",
+                (json.dumps(state, ensure_ascii=False), sid),
             )
         conn.execute(
             "UPDATE sessions SET status = ? WHERE id = ?",

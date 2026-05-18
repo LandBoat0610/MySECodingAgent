@@ -78,12 +78,13 @@ html, body {
 
 .left-sidebar {
   width: 280px;
-  min-width: 280px;
+  min-width: 220px;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .center-preview {

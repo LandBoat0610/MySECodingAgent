@@ -17,13 +17,30 @@ function createMockStore(overrides = {}) {
         projects: [],
         selectedProjectId: null,
         sessions: [],
+        filteredSessions: overrides.sessions || [],
         selectedSessionId: null,
+        sessionSearch: '',
+        toolSettings: [],
+        toolSettingsLoading: false,
+        skills: [],
+        skillsLoading: false,
         loading: false,
         error: null,
         selectProject: vi.fn(),
         selectSession: vi.fn(),
         doCreateProject: vi.fn(),
         doCreateSession: vi.fn(),
+        startNewSession: vi.fn(),
+        doRenameSession: vi.fn(),
+        doTogglePinSession: vi.fn(),
+        doDeleteSession: vi.fn(),
+        doClearSession: vi.fn(),
+        fetchToolSettings: vi.fn(),
+        setToolEnabled: vi.fn(),
+        fetchSkills: vi.fn(),
+        doCreateSkill: vi.fn(),
+        doUpdateSkill: vi.fn(),
+        doDeleteSkill: vi.fn(),
         clearError: vi.fn(),
         ...overrides
     }
@@ -149,10 +166,8 @@ describe('ProjectPanel.vue', () => {
                 sessions: []
             }))
             const wrapper = mount(ProjectPanel)
-            // 第二个 empty-hint
             const hints = wrapper.findAll('.empty-hint')
-            expect(hints.length).toBeGreaterThanOrEqual(1)
-            expect(hints[hints.length - 1].text()).toContain('No sessions')
+            expect(hints.some(h => h.text().includes('No sessions'))).toBe(true)
         })
 
         it('should render session items', () => {
@@ -192,31 +207,43 @@ describe('ProjectPanel.vue', () => {
             await wrapper.find('.session-item').trigger('click')
             expect(mockStore.selectSession).toHaveBeenCalledWith('s1')
         })
-    })
 
-    // ---- 创建会话表单 ----
-    describe('create session form', () => {
-        it('should toggle new session form', async () => {
-            useAgentStore.mockReturnValue(createMockStore({ selectedProjectId: 'p1' }))
+        it('should show session search only after search button is clicked and clear it on close', async () => {
+            const mockStore = createMockStore({
+                selectedProjectId: 'p1',
+                sessions: [{ id: 's1', title: 'Chat', status: 'idle', created_at: '' }]
+            })
+            useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ProjectPanel)
-            // 第二个 btn-icon (+)
-            const sessionButtons = wrapper.findAll('.btn-icon')
-            await sessionButtons[sessionButtons.length - 1].trigger('click')
-            expect(wrapper.find('.new-session-form').exists()).toBe(true)
+            expect(wrapper.find('.session-search').exists()).toBe(false)
+
+            await wrapper.find('button[title="Search Sessions"]').trigger('click')
+            expect(wrapper.find('.session-search').exists()).toBe(true)
+            mockStore.sessionSearch = 'chat'
+            await wrapper.find('.session-search button[title="Close Search"]').trigger('click')
+            expect(wrapper.find('.session-search').exists()).toBe(false)
+            expect(mockStore.sessionSearch).toBe('')
         })
 
-        it('should call doCreateSession on submit', async () => {
+        it('should collapse sessions section', async () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                selectedProjectId: 'p1',
+                sessions: [{ id: 's1', title: 'Chat', status: 'idle', created_at: '' }]
+            }))
+            const wrapper = mount(ProjectPanel)
+            await wrapper.find('button[title="Collapse Sessions"]').trigger('click')
+            expect(wrapper.find('.session-list').exists()).toBe(false)
+        })
+    })
+
+    // ---- 新对话入口 ----
+    describe('new chat button', () => {
+        it('should call startNewSession when clicked', async () => {
             const mockStore = createMockStore({ selectedProjectId: 'p1' })
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ProjectPanel)
-            const sessionButtons = wrapper.findAll('.btn-icon')
-            await sessionButtons[sessionButtons.length - 1].trigger('click')
-            await wrapper.vm.$nextTick()  // ← 等待 DOM 更新
-            const input = wrapper.find('.new-session-form input')
-            expect(input.exists()).toBe(true)  // ← 添加检查
-            await input.setValue('New Session')
-            await wrapper.find('.new-session-form .btn-primary').trigger('click')
-            expect(mockStore.doCreateSession).toHaveBeenCalledWith('New Session')
+            await wrapper.find('button[title="New Chat"]').trigger('click')
+            expect(mockStore.startNewSession).toHaveBeenCalled()
         })
     })
 

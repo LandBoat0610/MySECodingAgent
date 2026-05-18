@@ -6,6 +6,9 @@ import {
   deleteProject,
   getSessions,
   createSession,
+  updateSession,
+  deleteSession,
+  clearSession,
   getSessionState,
   sendChat,
   getPlans,
@@ -13,7 +16,13 @@ import {
   getFileTree,
   getFileContent,
   stopSession,
-  createWebSocket
+  createWebSocket,
+  getToolSettings,
+  updateToolSettings,
+  getSkills,
+  createSkill,
+  updateSkill,
+  deleteSkill
 } from '../api/index.js'
 import { persistProjectId, getPersistedProjectId, persistSessionId, getPersistedSessionId } from '../utils/persistence.js'
 
@@ -39,6 +48,11 @@ export const useAgentStore = defineStore('agent', () => {
   const selectedFile = ref(null)
   const fileContent = ref('')
   const fileLoading = ref(false)
+  const sessionSearch = ref('')
+  const toolSettings = ref([])
+  const toolSettingsLoading = ref(false)
+  const skills = ref([])
+  const skillsLoading = ref(false)
 
   /** 多轮对话追踪 */
   const completedRounds = ref([])     // [{userMessage, traceLogs, plans, finalAnswer}]
@@ -57,6 +71,11 @@ export const useAgentStore = defineStore('agent', () => {
 
   const selectedProject = computed(() => projects.value.find(p => p.id === selectedProjectId.value) || null)
   const selectedSession = computed(() => sessions.value.find(s => s.id === selectedSessionId.value) || null)
+  const filteredSessions = computed(() => {
+    const q = sessionSearch.value.trim().toLowerCase()
+    if (!q) return sessions.value
+    return sessions.value.filter(s => String(s.title || '').toLowerCase().includes(q))
+  })
   const pendingPlans = computed(() => plans.value.filter(p => p.status === 'pending'))
 
   function setError(err) {
@@ -161,6 +180,98 @@ export const useAgentStore = defineStore('agent', () => {
     sessions.value.unshift(session)
     selectSession(session.id)
     return session
+  }
+
+  async function doRenameSession(sessionId, title) {
+    if (!selectedProjectId.value) return null
+    clearError()
+    try {
+      const updated = await updateSession(selectedProjectId.value, sessionId, { title })
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx >= 0) sessions.value[idx] = updated
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doTogglePinSession(sessionId) {
+    if (!selectedProjectId.value) return null
+    const session = sessions.value.find(s => s.id === sessionId)
+    if (!session) return null
+    clearError()
+    try {
+      const updated = await updateSession(selectedProjectId.value, sessionId, { pinned: !session.pinned })
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx >= 0) sessions.value[idx] = updated
+      sessions.value = [...sessions.value].sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.created_at) - new Date(a.created_at)
+      )
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doDeleteSession(sessionId) {
+    if (!selectedProjectId.value) return
+    clearError()
+    try {
+      await deleteSession(selectedProjectId.value, sessionId)
+      if (selectedSessionId.value === sessionId) {
+        startNewSession()
+      }
+      sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doClearSession(sessionId) {
+    if (!selectedProjectId.value) return
+    clearError()
+    try {
+      await clearSession(selectedProjectId.value, sessionId)
+      const session = sessions.value.find(s => s.id === sessionId)
+      if (session) session.status = 'idle'
+      if (selectedSessionId.value === sessionId) {
+        plans.value = []
+        traceLogs.value = []
+        chatMessages.value = []
+        finalAnswer.value = ''
+        stateSnapshot.value = null
+        sessionStatus.value = 'idle'
+        agentRunning.value = false
+        completedRounds.value = []
+        currentRoundUserMsg.value = ''
+        prevRoundPlanIds.value = new Set()
+        resetLivePerfForNewRun()
+      }
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  function startNewSession() {
+    disconnectWebSocket()
+    selectedSessionId.value = null
+    persistSessionId(null)
+    plans.value = []
+    traceLogs.value = []
+    chatMessages.value = []
+    finalAnswer.value = ''
+    stateSnapshot.value = null
+    sessionStatus.value = 'idle'
+    agentRunning.value = false
+    agentRunStartedAt.value = null
+    completedRounds.value = []
+    currentRoundUserMsg.value = ''
+    prevRoundPlanIds.value = new Set()
+    resetLivePerfForNewRun()
   }
 
   async function selectSession(sessionId) {
@@ -323,6 +434,7 @@ export const useAgentStore = defineStore('agent', () => {
           sessionStatus.value = data.status || 'completed'
           fetchPlans()
           restoreSessionState()
+          fetchSessions()
           // Agent 结束后：刷新文件树，并刷新当前打开的文件内容
           fetchFileTree()
           if (selectedFile.value) {
@@ -337,6 +449,7 @@ export const useAgentStore = defineStore('agent', () => {
           sessionStatus.value = 'stopped'
           fetchPlans()
           restoreSessionState()
+          fetchSessions()
         }
       } catch (e) {
         console.error('WebSocket message parse error:', e)
@@ -389,6 +502,18 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function doSendChat(message) {
     clearError()
+    if (!selectedProjectId.value) {
+      const e = new Error('请先选择或创建一个项目')
+      setError(e)
+      throw e
+    }
+    if (!selectedSessionId.value || sessionStatus.value === 'stopped') {
+      const session = await createSession(selectedProjectId.value, { initial_message: message })
+      sessions.value.unshift(session)
+      selectedSessionId.value = session.id
+      persistSessionId(session.id)
+      sessionStatus.value = session.status || 'idle'
+    }
     // 将当前轮归档到历史（如果本轮已有用户消息）
     if (currentRoundUserMsg.value) {
       completedRounds.value.push({
@@ -422,10 +547,10 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
-  async function doPlanAction(planId, action) {
+  async function doPlanAction(planId, action, feedback = '') {
     clearError()
     try {
-      const resp = await planAction(selectedProjectId.value, selectedSessionId.value, planId, action)
+      const resp = await planAction(selectedProjectId.value, selectedSessionId.value, planId, action, feedback)
       const plan = plans.value.find(p => p.id === planId)
       if (plan) {
         plan.status = resp.status
@@ -513,10 +638,88 @@ export const useAgentStore = defineStore('agent', () => {
     chatMessages.value.push({ role: 'assistant', content })
   }
 
+  async function fetchToolSettings() {
+    clearError()
+    toolSettingsLoading.value = true
+    try {
+      const resp = await getToolSettings()
+      toolSettings.value = resp.tools || []
+    } catch (e) {
+      setError(e)
+    } finally {
+      toolSettingsLoading.value = false
+    }
+  }
+
+  async function setToolEnabled(name, enabled) {
+    clearError()
+    const prev = toolSettings.value.map(t => ({ ...t }))
+    toolSettings.value = toolSettings.value.map(t => t.name === name ? { ...t, enabled } : t)
+    try {
+      const resp = await updateToolSettings({ tools: { [name]: enabled } })
+      toolSettings.value = resp.tools || toolSettings.value
+    } catch (e) {
+      toolSettings.value = prev
+      setError(e)
+      throw e
+    }
+  }
+
+  async function fetchSkills() {
+    clearError()
+    skillsLoading.value = true
+    try {
+      const resp = await getSkills()
+      skills.value = resp.skills || []
+    } catch (e) {
+      setError(e)
+    } finally {
+      skillsLoading.value = false
+    }
+  }
+
+  async function doCreateSkill(data) {
+    clearError()
+    try {
+      const skill = await createSkill(data)
+      skills.value.push(skill)
+      return skill
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doUpdateSkill(skillId, data) {
+    clearError()
+    try {
+      const updated = await updateSkill(skillId, data)
+      const idx = skills.value.findIndex(s => s.id === skillId)
+      if (idx >= 0) skills.value[idx] = updated
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doDeleteSkill(skillId) {
+    clearError()
+    try {
+      await deleteSkill(skillId)
+      skills.value = skills.value.filter(s => s.id !== skillId)
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
   return {
     projects,
     selectedProjectId,
     sessions,
+    filteredSessions,
+    sessionSearch,
     selectedSessionId,
     sessionStatus,
     stateSnapshot,
@@ -531,6 +734,10 @@ export const useAgentStore = defineStore('agent', () => {
     error,
     agentRunStartedAt,
     livePerf,
+    toolSettings,
+    toolSettingsLoading,
+    skills,
+    skillsLoading,
     selectedProject,
     selectedSession,
     pendingPlans,
@@ -538,7 +745,12 @@ export const useAgentStore = defineStore('agent', () => {
     doCreateProject,
     selectProject,
     fetchSessions,
+    doRenameSession,
+    doTogglePinSession,
+    doDeleteSession,
+    doClearSession,
     doCreateSession,
+    startNewSession,
     selectSession,
     restoreSessionState,
     fetchFileTree,
@@ -553,6 +765,12 @@ export const useAgentStore = defineStore('agent', () => {
     fileContent,
     fileLoading,
     fetchFileContent,
+    fetchToolSettings,
+    setToolEnabled,
+    fetchSkills,
+    doCreateSkill,
+    doUpdateSkill,
+    doDeleteSkill,
     addAssistantMessage,
     clearError,
     completedRounds,

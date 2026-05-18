@@ -58,8 +58,21 @@ describe('FileTreePanel.vue', () => {
         const mockStore = createMockStore({ selectedProjectId: 'p1', fileTree: [] })
         useAgentStore.mockReturnValue(mockStore)
         const wrapper = mount(FileTreePanel)
-        await wrapper.find('.btn-icon').trigger('click')
+        await wrapper.find('button[title="Refresh"]').trigger('click')
         expect(mockStore.fetchFileTree).toHaveBeenCalled()
+    })
+
+    it('should collapse and expand file tree body', async () => {
+        useAgentStore.mockReturnValue(createMockStore({
+            selectedProjectId: 'p1',
+            fileTree: [{ path: '/test.js', type: 'file' }]
+        }))
+        const wrapper = mount(FileTreePanel)
+        expect(wrapper.find('.filetree-body').exists()).toBe(true)
+        await wrapper.find('button[title="Collapse Files"]').trigger('click')
+        expect(wrapper.find('.filetree-body').exists()).toBe(false)
+        await wrapper.find('button[title="Expand Files"]').trigger('click')
+        expect(wrapper.find('.filetree-body').exists()).toBe(true)
     })
 
     it('should emit select-file when child node emits select', async () => {

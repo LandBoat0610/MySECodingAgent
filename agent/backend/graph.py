@@ -18,6 +18,7 @@ from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
+from agent.backend.platform_settings import get_tool_settings, is_tool_enabled
 
 import time
 from agent.backend.database import get_connection
@@ -50,6 +51,26 @@ def wait_for_plan_approval(session_id: str) -> str:
     return "timeout"
 
 
+def _refresh_plan_feedback(state: AgentState) -> None:
+    session_id = state.get("session_id")
+    if not session_id:
+        return
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_snapshot FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return
+        snapshot = json.loads(row["state_snapshot"] or "{}")
+        feedback = snapshot.get("plan_feedback", "")
+        if feedback:
+            state["plan_feedback"] = feedback
+    except Exception:
+        return
+
+
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
@@ -58,7 +79,11 @@ def planner_node(state: AgentState) -> AgentState:
         return state
 
     steps = create_plan(state["task"], state.get("memory", ""), trace, state)
+    if _check_cancel(state):
+        return state
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
+    if _check_cancel(state):
+        return state
 
     state["task_list"] = steps
     state["current_task_index"] = 0
@@ -101,8 +126,13 @@ def planner_node(state: AgentState) -> AgentState:
             state["status"] = "running"
             update_session_state(session_id, state, status="running")
             log_state(trace, "planner", "用户要求再优化，重新生成计划...", session_id=session_id, state=state)
+            _refresh_plan_feedback(state)
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
+            if _check_cancel(state):
+                return state
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
+            if _check_cancel(state):
+                return state
             state["task_list"] = steps
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
@@ -147,9 +177,20 @@ def planner_node(state: AgentState) -> AgentState:
 
 def _check_cancel(state: AgentState) -> bool:
     cancel_event = state.get("_cancel_event")
-    if cancel_event and cancel_event.is_set():
+    session_id = state.get("session_id")
+    cancelled = bool(cancel_event and cancel_event.is_set())
+    if not cancelled and session_id:
+        try:
+            with get_connection() as conn:
+                row = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                cancelled = bool(row and row["status"] == "stopped")
+        except Exception:
+            cancelled = False
+
+    if cancelled:
+        if cancel_event:
+            cancel_event.set()
         state["status"] = "stopped"
-        session_id = state.get("session_id")
         trace = state.get("trace", [])
         if session_id:
             from agent.backend.utils import update_session_state
@@ -173,6 +214,9 @@ def executor_node(state: AgentState) -> AgentState:
     step_task = state.get("current_task", state["task"])
     system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
+    tools_module.CURRENT_CANCEL_EVENT = state.get("_cancel_event")
+    enabled_tools = get_tool_settings()
+    active_tools = [tool for tool in tools if enabled_tools.get(tool["function"]["name"], True)]
 
     messages.append({"role": "system", "content": system_prompt})
     step_context = (
@@ -191,14 +235,19 @@ def executor_node(state: AgentState) -> AgentState:
             return state
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         try:
-            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
+            kwargs = {"model": get_effective_model(), "messages": messages}
+            if active_tools:
+                kwargs["tools"] = active_tools
+            response = client.chat.completions.create(**kwargs)
             record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
             state.setdefault("errors", []).append(state["last_tool_result"])
             if session_id:
                 from agent.backend.utils import update_session_state
-                update_session_state(session_id, state)
+            update_session_state(session_id, state)
+            return state
+        if _check_cancel(state):
             return state
 
         message = response.choices[0].message
@@ -225,6 +274,8 @@ def executor_node(state: AgentState) -> AgentState:
             return state
 
         for tool_call in message.tool_calls:
+            if _check_cancel(state):
+                return state
             function_payload = getattr(tool_call, "function", None)
             if function_payload is None:
                 continue
@@ -244,11 +295,17 @@ def executor_node(state: AgentState) -> AgentState:
                 record_tool_call(state, function_name, False, 0.0)
             else:
                 func = available_functions.get(function_name)
-                if func is None:
+                if not is_tool_enabled(function_name):
+                    result_text = tool_result("error", f"Tool disabled: {function_name}")
+                    parsed_result = parse_json_object(result_text)
+                    record_tool_call(state, function_name, False, 0.0)
+                elif func is None:
                     result_text = tool_result("error", f"Unknown tool: {function_name}")
                     parsed_result = parse_json_object(result_text)
                     record_tool_call(state, function_name, False, 0.0)
                 else:
+                    if _check_cancel(state):
+                        return state
                     t0 = time.monotonic()
                     try:
                         result_text = func(**function_args)
@@ -258,6 +315,8 @@ def executor_node(state: AgentState) -> AgentState:
                     parsed_result = parse_json_object(result_text)
                     ok = parsed_result.get("status") != "error"
                     record_tool_call(state, function_name, ok, elapsed_ms)
+                    if _check_cancel(state):
+                        return state
 
             action_log.append({"tool": function_name, "args": function_args, "result": parsed_result})
             state.setdefault("used_tools", []).append(function_name)
@@ -293,6 +352,8 @@ def executor_node(state: AgentState) -> AgentState:
 
 
 def check_result_node(state: AgentState) -> AgentState:
+    if state.get("status") == "stopped":
+        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
@@ -355,6 +416,8 @@ def check_result_node(state: AgentState) -> AgentState:
 
 
 def modify_code_node(state: AgentState) -> AgentState:
+    if state.get("status") == "stopped":
+        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
@@ -393,6 +456,8 @@ def modify_code_node(state: AgentState) -> AgentState:
             ),
             state,
         )
+        if _check_cancel(state):
+            return state
         updated_code = data.get("updated_code", "")
         diagnosis = data.get("diagnosis", "")
         summary = data.get("summary", "")
@@ -425,18 +490,26 @@ def finalize_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id")
     used_tools = sorted(set(state.get("used_tools", [])))
     result_history = "\n\n".join(state.get("result_history", []))
-    final_summary = (
-        f"Overall task: {state['task']}\n\n"
-        f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
-        f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
-        f"Target file: {state.get('target_file', '')}\n"
-        f"Run command: {state.get('run_command', '')}\n\n"
-        f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-        f"Final status: {state.get('status', 'unknown')}"
-    )
+    if state.get("status") == "stopped":
+        final_summary = (
+            f"Overall task: {state['task']}\n\n"
+            "Execution was stopped by the user. No further agent steps will be run.\n\n"
+            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
+            "Final status: stopped"
+        )
+    else:
+        final_summary = (
+            f"Overall task: {state['task']}\n\n"
+            f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
+            f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
+            f"Target file: {state.get('target_file', '')}\n"
+            f"Run command: {state.get('run_command', '')}\n\n"
+            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
+            f"Final status: {state.get('status', 'unknown')}"
+        )
     state["final_answer"] = final_summary
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
-    if not state.get("eval_mode"):
+    if not state.get("eval_mode") and state.get("status") != "stopped":
         save_memory(state["task"], final_summary)
 
     if session_id:
@@ -466,7 +539,27 @@ def route_after_check(state: AgentState) -> str:
     return "finalize"
 
 
+def route_after_planner(state: AgentState) -> str:
+    if state.get("status") == "stopped":
+        return "finalize"
+    return "executor"
+
+
+def route_after_executor(state: AgentState) -> str:
+    if state.get("status") == "stopped":
+        return "finalize"
+    return "check_result"
+
+
+def route_after_modify(state: AgentState) -> str:
+    if state.get("status") == "stopped":
+        return "finalize"
+    return "executor"
+
+
 def next_step_node(state: AgentState) -> AgentState:
+    if _check_cancel(state):
+        return state
     idx = state.get("current_task_index", 0) + 1
     state["current_task_index"] = idx
     tasks = state.get("task_list", [])
@@ -492,8 +585,8 @@ def build_graph():
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "executor")
-    graph.add_edge("executor", "check_result")
+    graph.add_conditional_edges("planner", route_after_planner, {"executor": "executor", "finalize": "finalize"})
+    graph.add_conditional_edges("executor", route_after_executor, {"check_result": "check_result", "finalize": "finalize"})
     graph.add_conditional_edges(
         "check_result",
         route_after_check,
@@ -503,7 +596,7 @@ def build_graph():
             "finalize": "finalize",
         },
     )
-    graph.add_edge("modify_code", "executor")
+    graph.add_conditional_edges("modify_code", route_after_modify, {"executor": "executor", "finalize": "finalize"})
     graph.add_edge("next_step", "executor")
     graph.add_edge("finalize", END)
     return graph.compile()
