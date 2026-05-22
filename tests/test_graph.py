@@ -180,6 +180,45 @@ class TestExecutorNode:
         assert len(new_state["errors"]) == 1
         assert new_state["errors"][0]["status"] == "error"
 
+    def test_executor_hard_task_uses_dynamic_iteration_limit(self, monkeypatch, base_state):
+        """hard 任务应允许超过默认 5 轮工具循环"""
+        tool_call = MagicMock()
+        tool_call.id = "call_hard"
+        tool_func = MagicMock()
+        tool_func.name = "read_file"
+        tool_func.arguments = '{"path": "a.py"}'
+        tool_call.function = tool_func
+
+        mock_message_tool = MagicMock()
+        mock_message_tool.tool_calls = [tool_call]
+        mock_message_tool.content = None
+
+        mock_message_text = MagicMock()
+        mock_message_text.tool_calls = None
+        mock_message_text.content = "Finished after many reads."
+
+        tool_response = MagicMock()
+        tool_response.choices = [MagicMock(message=mock_message_tool)]
+        text_response = MagicMock()
+        text_response.choices = [MagicMock(message=mock_message_text)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [tool_response] * 6 + [text_response]
+        monkeypatch.setattr("agent.backend.graph.client", mock_client)
+        monkeypatch.setattr("agent.backend.graph.build_system_prompt", lambda mem, ws: "sys")
+        monkeypatch.setattr(
+            "agent.backend.graph.available_functions",
+            {"read_file": lambda path: json.dumps({"status": "success", "output": "content", "path": path})},
+        )
+        monkeypatch.setattr("agent.backend.graph.parse_tool_arguments", lambda raw: json.loads(raw))
+
+        state = base_state.copy()
+        state["task_difficulty"] = "hard"
+        new_state = executor_node(state)
+
+        assert new_state["last_tool_result"]["status"] == "success"
+        assert mock_client.chat.completions.create.call_count == 7
+
 
 # ================== Check Result Node ==================
 class TestCheckResultNode:

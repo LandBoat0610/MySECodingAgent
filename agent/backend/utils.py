@@ -155,11 +155,12 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
     from agent.backend.database import get_connection
     try:
         snapshot = _serialize_state(state)
+        effective_status = status if status is not None else state.get("status")
         with get_connection() as conn:
-            if status:
+            if effective_status:
                 conn.execute(
                     "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
-                    (snapshot, status, session_id),
+                    (snapshot, effective_status, session_id),
                 )
             else:
                 conn.execute(
@@ -249,6 +250,19 @@ def log_state(
     # 如果提供了 session_id 和 state，则同步到数据库
     if session_id and state:
         update_session_state(session_id, state)
+        round_id = state.get("current_round_id")
+        if round_id:
+            try:
+                from agent.backend.database import get_connection
+                trace_json = json.dumps(state.get("trace") or [], ensure_ascii=False)
+                metrics_json = json.dumps(state.get("runtime_metrics") or {}, ensure_ascii=False)
+                with get_connection() as conn:
+                    conn.execute(
+                        "UPDATE conversation_rounds SET trace_json = ?, runtime_metrics_json = ?, status = ? WHERE id = ?",
+                        (trace_json, metrics_json, state.get("status", "running"), round_id),
+                    )
+            except Exception as e:
+                print(f"Error updating conversation round trace: {e}")
 
     # 调用所有注册的回调（用于 WebSocket 实时推送）
     # 每个 session_id 最多一个回调，避免重连积累导致重复推送

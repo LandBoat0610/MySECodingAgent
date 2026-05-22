@@ -13,6 +13,8 @@ from agent.backend.utils import parse_json_object, load_prompts, log_state, reso
 
 load_dotenv()
 
+PLAN_MAX_STEPS = 20
+
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
     base_url=os.environ.get("OPENAI_BASE_URL")
@@ -117,10 +119,12 @@ def create_plan(
         )
         system_prompt += (
             "\n\nPlan display rules:"
+            "\n- First classify task difficulty as easy, medium, or hard, then choose the number of steps accordingly."
             "\n- Each item in steps must be a short user-facing natural-language sentence."
             "\n- Do not include JSON, code blocks, tool call names, function arguments, diffs, or internal metadata."
             "\n- Describe intent and outcome, not raw implementation parameters."
-            "\n- Return 3-6 steps maximum."
+            f"\n- Return between 1 and {PLAN_MAX_STEPS} steps. Simple tasks should use 1-2 steps; do not pad the plan."
+            f"\n- Never return more than {PLAN_MAX_STEPS} steps."
         )
         template = planner_config.get("template", "用户任务:\n{user_task}")
         user_prompt = template.format(user_task=task)
@@ -131,10 +135,15 @@ def create_plan(
             user_prompt += f"\n\n用户对计划的修改要求:\n{feedback}"
 
         data = llm_json(system_prompt, user_prompt, state)
+        difficulty = str(data.get("difficulty") or "").strip().lower()
+        if difficulty:
+            if state is not None:
+                state["task_difficulty"] = difficulty
+            log_state(trace, "plan_difficulty", difficulty)
         steps = data.get("steps", [])
         if not isinstance(steps, list) or not steps:
             return [task]
-        result = [_normalize_plan_step(s) for s in steps]
+        result = [_normalize_plan_step(s) for s in steps[:PLAN_MAX_STEPS]]
         result = [s for s in result if s]
         log_state(trace, "plan_result", "\n".join(f"{i + 1}. {s}" for i, s in enumerate(result)))
         return result or [task]

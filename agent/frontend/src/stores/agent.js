@@ -12,7 +12,10 @@ import {
   getSessionState,
   sendChat,
   getPlans,
+  getRounds,
   planAction,
+  commandApproval,
+  continueApproval,
   getFileTree,
   getFileContent,
   stopSession,
@@ -25,6 +28,8 @@ import {
   deleteSkill
 } from '../api/index.js'
 import { persistProjectId, getPersistedProjectId, persistSessionId, getPersistedSessionId } from '../utils/persistence.js'
+
+const ROUND_PAGE_SIZE = 8
 
 export const useAgentStore = defineStore('agent', () => {
   const projects = ref([])
@@ -58,6 +63,9 @@ export const useAgentStore = defineStore('agent', () => {
   const completedRounds = ref([])     // [{userMessage, traceLogs, plans, finalAnswer}]
   const currentRoundUserMsg = ref('') // 当前轮次用户输入
   const prevRoundPlanIds = ref(new Set()) // 上一轮已归档的 plan ID 集合
+  const roundsCursor = ref(null)
+  const roundsHasMore = ref(false)
+  const roundsLoadingOlder = ref(false)
 
   /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
   const agentRunStartedAt = ref(null)
@@ -77,6 +85,14 @@ export const useAgentStore = defineStore('agent', () => {
     return sessions.value.filter(s => String(s.title || '').toLowerCase().includes(q))
   })
   const pendingPlans = computed(() => plans.value.filter(p => p.status === 'pending'))
+  const pendingCommandApproval = computed(() => {
+    const pending = stateSnapshot.value?.pending_tool_approval
+    return pending && pending.status === 'pending' ? pending : null
+  })
+  const pendingLoopApproval = computed(() => {
+    const pending = stateSnapshot.value?.pending_loop_approval
+    return pending && pending.status === 'pending' ? pending : null
+  })
 
   function setError(err) {
     error.value = typeof err === 'string' ? err : (err.response?.data?.detail || err.message || 'Unknown error')
@@ -135,6 +151,12 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  function resetRoundPaging() {
+    roundsCursor.value = null
+    roundsHasMore.value = false
+    roundsLoadingOlder.value = false
+  }
+
   function selectProject(projectId) {
     disconnectWebSocket()
     selectedProjectId.value = projectId
@@ -155,6 +177,7 @@ export const useAgentStore = defineStore('agent', () => {
     completedRounds.value = []
     currentRoundUserMsg.value = ''
     prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
     resetLivePerfForNewRun()
     fetchSessions()
     fetchFileTree()
@@ -248,6 +271,7 @@ export const useAgentStore = defineStore('agent', () => {
         completedRounds.value = []
         currentRoundUserMsg.value = ''
         prevRoundPlanIds.value = new Set()
+        resetRoundPaging()
         resetLivePerfForNewRun()
       }
     } catch (e) {
@@ -271,6 +295,7 @@ export const useAgentStore = defineStore('agent', () => {
     completedRounds.value = []
     currentRoundUserMsg.value = ''
     prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
     resetLivePerfForNewRun()
   }
 
@@ -288,6 +313,7 @@ export const useAgentStore = defineStore('agent', () => {
     completedRounds.value = []
     currentRoundUserMsg.value = ''
     prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
     resetLivePerfForNewRun()
     await restoreSessionState()
   }
@@ -314,9 +340,12 @@ export const useAgentStore = defineStore('agent', () => {
           tool_calls: m.tool_calls || null
         }))
 
-      await fetchPlans()
+      await fetchRounds()
+      if (completedRounds.value.length === 0 && !currentRoundUserMsg.value) {
+        await fetchPlans()
+      }
 
-      if (['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step'].includes(stateResp.status)) {
+      if (['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step'].includes(stateResp.status)) {
         connectWebSocket()
       }
 
@@ -348,6 +377,73 @@ export const useAgentStore = defineStore('agent', () => {
       plans.value = await getPlans(selectedProjectId.value, selectedSessionId.value)
     } catch (e) {
       setError(e)
+    }
+  }
+
+  function mapRound(r) {
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      userMessage: r.user_message,
+      traceLogs: r.trace_json || [],
+      plans: r.plans || [],
+      finalAnswer: r.final_answer || '',
+      status: r.status,
+    }
+  }
+
+  function applyRoundPage(mapped, appendOlder = false) {
+    const activeStatuses = new Set(['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step'])
+    const last = mapped[mapped.length - 1]
+    const hasActiveRound = last && activeStatuses.has(last.status)
+
+    if (appendOlder) {
+      completedRounds.value = [...mapped, ...completedRounds.value]
+      if (mapped.length > 0) roundsCursor.value = mapped[0].createdAt
+      roundsHasMore.value = mapped.length >= ROUND_PAGE_SIZE
+      prevRoundPlanIds.value = new Set(completedRounds.value.flatMap(r => (r.plans || []).map(p => p.id)))
+      return
+    }
+
+    completedRounds.value = hasActiveRound ? mapped.slice(0, -1) : mapped
+    if (hasActiveRound) {
+      currentRoundUserMsg.value = last.userMessage
+      traceLogs.value = last.traceLogs
+      plans.value = last.plans
+      finalAnswer.value = last.finalAnswer
+    } else {
+      currentRoundUserMsg.value = ''
+      traceLogs.value = []
+      plans.value = []
+      finalAnswer.value = ''
+    }
+    roundsCursor.value = mapped[0]?.createdAt || null
+    roundsHasMore.value = mapped.length >= ROUND_PAGE_SIZE
+    prevRoundPlanIds.value = new Set(completedRounds.value.flatMap(r => (r.plans || []).map(p => p.id)))
+  }
+
+  async function fetchRounds(options = {}) {
+    if (!selectedProjectId.value || !selectedSessionId.value) return
+    try {
+      const appendOlder = !!options.appendOlder
+      const rounds = await getRounds(selectedProjectId.value, selectedSessionId.value, {
+        limit: ROUND_PAGE_SIZE,
+        before: appendOlder ? roundsCursor.value : '',
+      })
+      applyRoundPage((rounds || []).map(mapRound), appendOlder)
+    } catch (e) {
+      setError(e)
+    }
+  }
+
+  async function loadOlderRounds() {
+    if (!roundsHasMore.value || roundsLoadingOlder.value || !roundsCursor.value) return false
+    roundsLoadingOlder.value = true
+    try {
+      await fetchRounds({ appendOlder: true })
+      return true
+    } finally {
+      roundsLoadingOlder.value = false
     }
   }
 
@@ -404,10 +500,24 @@ export const useAgentStore = defineStore('agent', () => {
                   : livePerf.value.toolAvgLatencyMs
             }
           }
+          if (data.data.phase === 'tool_approval' && meta.pending_tool_approval) {
+            stateSnapshot.value = {
+              ...(stateSnapshot.value || {}),
+              status: data.data.session_status || 'awaiting_tool_approval',
+              pending_tool_approval: meta.pending_tool_approval,
+            }
+            sessionStatus.value = data.data.session_status || 'awaiting_tool_approval'
+          }
           if (data.data.session_status) {
             sessionStatus.value = data.data.session_status
             if (data.data.session_status === 'awaiting_approval') {
               fetchPlans()
+            }
+            if (data.data.session_status === 'awaiting_tool_approval') {
+              restoreSessionState()
+            }
+            if (data.data.session_status === 'awaiting_continue_approval') {
+              restoreSessionState()
             }
           }
           // Agent 完成一个步骤后刷新文件树（及时展示新建/修改的文件）
@@ -465,7 +575,7 @@ export const useAgentStore = defineStore('agent', () => {
         agentRunStartedAt.value = null
         return
       }
-      const activeStates = ['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step']
+      const activeStates = ['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step']
       if (activeStates.includes(sessionStatus.value)) {
         wsReconnectAttempts.value++
         if (wsReconnectAttempts.value <= WS_MAX_RECONNECT) {
@@ -565,6 +675,44 @@ export const useAgentStore = defineStore('agent', () => {
       } else if (action === 'skip') {
         sessionStatus.value = 'skipped'
         agentRunning.value = false
+      }
+      return resp
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doCommandApproval(approvalId, action, feedback = '') {
+    clearError()
+    try {
+      const resp = await commandApproval(selectedProjectId.value, selectedSessionId.value, approvalId, action, feedback)
+      if (stateSnapshot.value?.pending_tool_approval?.id === approvalId) {
+        stateSnapshot.value.pending_tool_approval.status = resp.status
+        stateSnapshot.value.pending_tool_approval.feedback = feedback
+      }
+      sessionStatus.value = 'running'
+      connectWebSocket()
+      return resp
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doContinueApproval(approvalId, action) {
+    clearError()
+    try {
+      const resp = await continueApproval(selectedProjectId.value, selectedSessionId.value, approvalId, action)
+      if (stateSnapshot.value?.pending_loop_approval?.id === approvalId) {
+        stateSnapshot.value.pending_loop_approval.status = resp.status
+      }
+      sessionStatus.value = action === 'continue' ? 'running' : 'stopped'
+      if (action === 'continue') {
+        connectWebSocket()
+      } else {
+        agentRunning.value = false
+        disconnectWebSocket()
       }
       return resp
     } catch (e) {
@@ -741,6 +889,8 @@ export const useAgentStore = defineStore('agent', () => {
     selectedProject,
     selectedSession,
     pendingPlans,
+    pendingCommandApproval,
+    pendingLoopApproval,
     fetchProjects,
     doCreateProject,
     selectProject,
@@ -755,10 +905,14 @@ export const useAgentStore = defineStore('agent', () => {
     restoreSessionState,
     fetchFileTree,
     fetchPlans,
+    fetchRounds,
+    loadOlderRounds,
     connectWebSocket,
     disconnectWebSocket,
     doSendChat,
     doPlanAction,
+    doCommandApproval,
+    doContinueApproval,
     doStopSession,
     doDeleteProject,
     selectedFile,
@@ -776,5 +930,7 @@ export const useAgentStore = defineStore('agent', () => {
     completedRounds,
     currentRoundUserMsg,
     prevRoundPlanIds,
+    roundsHasMore,
+    roundsLoadingOlder,
   }
 })

@@ -21,13 +21,17 @@ tools = [
         "type": "function",
         "function": {
             "name": "execute_bash",
-            "description": "Execute a bash command within the workspace for development and validation tasks.",
+            "description": (
+                "Propose a bash command and its purpose. The command will only execute after user approval. "
+                "If the user rejects it or requests changes, react to that feedback and choose another command or skip it."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The bash command to execute"}
+                    "command": {"type": "string", "description": "The bash command to execute"},
+                    "purpose": {"type": "string", "description": "A concise user-facing explanation of what this command does and why it is needed"}
                 },
-                "required": ["command"]
+                "required": ["command", "purpose"]
             }
         }
     },
@@ -95,7 +99,7 @@ def parse_tool_arguments(raw_arguments: str) -> Dict[str, Any]:
         return {"_argument_error": f"Invalid JSON arguments: {error}"}
 
 
-def execute_bash(command: str) -> str:
+def execute_bash(command: str, purpose: str = "") -> str:
     try:
         workspace_dir = CURRENT_WORKSPACE_DIR or ensure_workspace()
         for pattern in BLOCKED_BASH_PATTERNS:

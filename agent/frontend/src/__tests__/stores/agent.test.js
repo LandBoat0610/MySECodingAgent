@@ -23,7 +23,10 @@ vi.mock('../../api/index.js', () => ({
     getSessionState: vi.fn(),
     sendChat: vi.fn(),
     getPlans: vi.fn(),
+    getRounds: vi.fn(),
     planAction: vi.fn(),
+    commandApproval: vi.fn(),
+    continueApproval: vi.fn(),
     getFileTree: vi.fn(),
     stopSession: vi.fn(),
     createWebSocket: vi.fn(),
@@ -103,6 +106,7 @@ describe('agent store', () => {
         api.getSessions.mockResolvedValue([])
         api.getSessionState.mockResolvedValue({ status: 'idle', snapshot: null })
         api.getPlans.mockResolvedValue([])
+        api.getRounds.mockResolvedValue([])
         api.getFileTree.mockResolvedValue([])
         api.createProject.mockResolvedValue({ id: 'new-proj', name: 'New' })
         api.createSession.mockResolvedValue({ id: 'new-sess', title: 'New Session' })
@@ -111,6 +115,8 @@ describe('agent store', () => {
         api.clearSession.mockResolvedValue({ status: 'cleared' })
         api.sendChat.mockResolvedValue({ status: 'running' })
         api.planAction.mockResolvedValue({ status: 'approved' })
+        api.commandApproval.mockResolvedValue({ status: 'approved' })
+        api.continueApproval.mockResolvedValue({ status: 'continued' })
         api.getToolSettings.mockResolvedValue({ tools: [] })
         api.updateToolSettings.mockResolvedValue({ tools: [] })
         api.getSkills.mockResolvedValue({ skills: [] })
@@ -471,6 +477,35 @@ describe('agent store', () => {
             expect(store.traceLogs[0].content).toBe('thinking...')
         })
 
+        it('should expose command approval from ws tool_approval trace', () => {
+            const store = createStore()
+            store.selectedProjectId = 'p1'
+            store.selectedSessionId = 's1'
+            store.connectWebSocket()
+
+            store.wsConnection._mockMessage({
+                type: 'trace',
+                data: {
+                    phase: 'tool_approval',
+                    content: '等待用户确认命令',
+                    session_status: 'awaiting_tool_approval',
+                    meta: {
+                        pending_tool_approval: {
+                            id: 'approve-1',
+                            tool: 'execute_bash',
+                            command: 'pytest -q',
+                            purpose: '运行测试',
+                            status: 'pending',
+                        },
+                    },
+                },
+            })
+
+            expect(store.sessionStatus).toBe('awaiting_tool_approval')
+            expect(store.pendingCommandApproval.command).toBe('pytest -q')
+            expect(store.pendingCommandApproval.purpose).toBe('运行测试')
+        })
+
         it('should handle ws.onmessage done event', () => {
             const store = createStore()
             store.selectedProjectId = 'p1'
@@ -661,6 +696,33 @@ describe('agent store', () => {
 
             await expect(store.doPlanAction('plan-1', 'stop')).rejects.toThrow()
             expect(store.error).toBeTruthy()
+        })
+    })
+
+    // ============================================================
+    // doCommandApproval
+    // ============================================================
+    describe('doCommandApproval', () => {
+        it('should send command feedback and update pending approval status', async () => {
+            const store = createStore()
+            store.selectedProjectId = 'p1'
+            store.selectedSessionId = 's1'
+            store.stateSnapshot = {
+                pending_tool_approval: {
+                    id: 'approval-1',
+                    command: 'npm test',
+                    purpose: '运行测试',
+                    status: 'pending',
+                },
+            }
+            api.commandApproval.mockResolvedValue({ status: 'revision_requested' })
+
+            await store.doCommandApproval('approval-1', 'revise', '改成 pytest -q')
+
+            expect(api.commandApproval).toHaveBeenCalledWith('p1', 's1', 'approval-1', 'revise', '改成 pytest -q')
+            expect(store.stateSnapshot.pending_tool_approval.status).toBe('revision_requested')
+            expect(store.stateSnapshot.pending_tool_approval.feedback).toBe('改成 pytest -q')
+            expect(store.sessionStatus).toBe('running')
         })
     })
 

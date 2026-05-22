@@ -98,14 +98,30 @@ class ChatResponse(BaseModel):
     session_id: str
     reply: str
     status: str
+    round_id: Optional[str] = None
 
 
 class PlanResponse(BaseModel):
     id: str
     session_id: str
+    round_id: Optional[str] = ""
     content: str
     status: str
     created_at: str
+
+
+class ConversationRoundResponse(BaseModel):
+    id: str
+    session_id: str
+    project_id: str
+    user_message: str
+    status: str
+    created_at: str
+    finished_at: Optional[str] = None
+    final_answer: str = ""
+    trace_json: List[Any] = Field(default_factory=list)
+    runtime_metrics_json: Dict[str, Any] = Field(default_factory=dict)
+    plans: List[PlanResponse] = Field(default_factory=list)
 
 
 class PlanAction(str, Enum):
@@ -122,6 +138,29 @@ class PlanActionRequest(BaseModel):
 
 class PlanActionResponse(BaseModel):
     plan_id: str
+    action: str
+    status: str
+
+
+class CommandApprovalRequest(BaseModel):
+    approval_id: str
+    action: str
+    feedback: Optional[str] = None
+
+
+class CommandApprovalResponse(BaseModel):
+    approval_id: str
+    action: str
+    status: str
+
+
+class LoopApprovalRequest(BaseModel):
+    approval_id: str
+    action: str
+
+
+class LoopApprovalResponse(BaseModel):
+    approval_id: str
     action: str
     status: str
 

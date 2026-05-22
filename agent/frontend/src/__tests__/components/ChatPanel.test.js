@@ -26,6 +26,10 @@ function createMockStore(overrides = {}) {
         traceLogs: [],
         finalAnswer: '',
         pendingPlans: [],
+        pendingCommandApproval: null,
+        pendingLoopApproval: null,
+        roundsHasMore: false,
+        roundsLoadingOlder: false,
         // 多轮模式相关（组件新增字段）
         plans: [],
         prevRoundPlanIds: new Set(),
@@ -34,6 +38,9 @@ function createMockStore(overrides = {}) {
         stateSnapshot: null,
         doSendChat: vi.fn(),
         doPlanAction: vi.fn(),
+        doCommandApproval: vi.fn(),
+        doContinueApproval: vi.fn(),
+        loadOlderRounds: vi.fn(),
         doStopSession: vi.fn(),
         disconnectWebSocket: vi.fn(),
         ...overrides
@@ -67,6 +74,39 @@ describe('ChatPanel.vue', () => {
             useAgentStore.mockReturnValue(createMockStore({ sessionStatus: 'completed' }))
             const wrapper = mount(ChatPanel)
             expect(wrapper.find('.status-badge').classes()).toContain('completed')
+        })
+
+        it('should show command approval dialog whenever a command is pending', () => {
+            const store = createMockStore({
+                sessionStatus: 'running',
+                pendingCommandApproval: {
+                    id: 'approve-1',
+                    command: 'pytest -q',
+                    purpose: '运行测试',
+                    status: 'pending',
+                },
+            })
+            useAgentStore.mockReturnValue(store)
+            const wrapper = mount(ChatPanel)
+            expect(wrapper.find('.command-dialog').exists()).toBe(true)
+            expect(wrapper.find('.command-code').text()).toContain('pytest -q')
+            expect(wrapper.find('.command-purpose').text()).toContain('运行测试')
+        })
+
+        it('should send command revision feedback from dialog', async () => {
+            const store = createMockStore({
+                pendingCommandApproval: {
+                    id: 'approve-1',
+                    command: 'npm test',
+                    purpose: '运行测试',
+                    status: 'pending',
+                },
+            })
+            useAgentStore.mockReturnValue(store)
+            const wrapper = mount(ChatPanel)
+            await wrapper.find('.command-feedback').setValue('改成 pytest -q')
+            await wrapper.find('.btn-revise').trigger('click')
+            expect(store.doCommandApproval).toHaveBeenCalledWith('approve-1', 'revise', '改成 pytest -q')
         })
     })
 
@@ -130,6 +170,21 @@ describe('ChatPanel.vue', () => {
             expect(wrapper.find('.card-act').exists()).toBe(true)
         })
 
+        it('should attach execute_bash result to the command card', async () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                traceLogs: [
+                    { phase: 'act', time: '12:00', content: 'execute_bash({"command":"pytest -q","purpose":"运行测试"})' },
+                    { phase: 'observe', time: '12:01', content: '{"status":"success","output":"100 passed","returncode":0}' }
+                ]
+            }))
+            const wrapper = mount(ChatPanel)
+            expect(wrapper.findAll('.card-act')).toHaveLength(1)
+            expect(wrapper.findAll('.card-observe')).toHaveLength(0)
+
+            await wrapper.find('.card-act .card-header').trigger('click')
+            expect(wrapper.find('.command-attached-result').text()).toContain('100 passed')
+        })
+
         it('should hide timeline when no logs and not running', () => {
             useAgentStore.mockReturnValue(createMockStore({
                 chatMessages: [{ role: 'user', content: 'hello' }],
@@ -142,19 +197,9 @@ describe('ChatPanel.vue', () => {
 
     // ---- Final Answer ----
     describe('final answer', () => {
-        it('should show final answer card when present', () => {
+        it('should not render a separate final answer card', () => {
             useAgentStore.mockReturnValue(createMockStore({
                 finalAnswer: 'Task completed successfully!'
-            }))
-            const wrapper = mount(ChatPanel)
-            expect(wrapper.find('.final-answer-card').exists()).toBe(true)
-            expect(wrapper.find('.final-content').text()).toContain('Task completed successfully!')
-        })
-
-        it('should hide final answer card when empty', () => {
-            useAgentStore.mockReturnValue(createMockStore({
-                chatMessages: [{ role: 'user', content: 'test' }],
-                finalAnswer: ''
             }))
             const wrapper = mount(ChatPanel)
             expect(wrapper.find('.final-answer-card').exists()).toBe(false)

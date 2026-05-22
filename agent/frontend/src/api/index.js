@@ -46,10 +46,33 @@ export function getPlans(projectId, sessionId) {
   return api.get(`/projects/${projectId}/sessions/${sessionId}/plan`).then(r => r.data)
 }
 
+export function getRounds(projectId, sessionId, options = {}) {
+  const params = {}
+  if (options.limit) params.limit = options.limit
+  if (options.before) params.before = options.before
+  return api.get(`/projects/${projectId}/sessions/${sessionId}/rounds`, { params }).then(r => r.data)
+}
+
 export function planAction(projectId, sessionId, planId, action, feedback = '') {
   const body = { action }
   if (feedback) body.feedback = feedback
   return api.post(`/projects/${projectId}/sessions/${sessionId}/plan/${planId}/action`, body).then(r => r.data)
+}
+
+export function commandApproval(projectId, sessionId, approvalId, action, feedback = '') {
+  const body = {
+    approval_id: approvalId,
+    action
+  }
+  if (feedback) body.feedback = feedback
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/command-approval`, body).then(r => r.data)
+}
+
+export function continueApproval(projectId, sessionId, approvalId, action) {
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/continue-approval`, {
+    approval_id: approvalId,
+    action
+  }).then(r => r.data)
 }
 
 export function deleteProject(projectId) {

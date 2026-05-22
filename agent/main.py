@@ -23,9 +23,14 @@ from agent.backend.schemas import (
     StateResponse,
     ChatRequest,
     ChatResponse,
+    ConversationRoundResponse,
     PlanResponse,
     PlanActionRequest,
     PlanActionResponse,
+    CommandApprovalRequest,
+    CommandApprovalResponse,
+    LoopApprovalRequest,
+    LoopApprovalResponse,
     FileTreeResponse,
     FileContentResponse,
     AgentConfigResponse,
@@ -195,6 +200,7 @@ def delete_project(project_id: str):
                 (sid,),
             )
             conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+            conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
 
         conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -279,6 +285,9 @@ def create_session(project_id: str, req: SessionCreateRequest):
                 "llm_calls": 0,
                 "tool_calls": [],
             },
+            "current_round_id": "",
+            "pending_tool_approval": None,
+            "pending_loop_approval": None,
         }
 
         conn.execute(
@@ -353,6 +362,7 @@ def delete_session(project_id: str, sid: str):
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
         conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
         conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
         conn.execute("DELETE FROM sessions WHERE id = ? AND project_id = ?", (sid, project_id))
 
     cleanup_cancel_event(sid)
@@ -392,9 +402,13 @@ def clear_session(project_id: str, sid: str):
                 "llm_calls": 0,
                 "tool_calls": [],
             },
+            "current_round_id": "",
+            "pending_tool_approval": None,
+            "pending_loop_approval": None,
         })
         conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
         conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
         conn.execute(
             "UPDATE sessions SET state_snapshot = ?, status = 'idle' WHERE id = ? AND project_id = ?",
             (json.dumps(state, ensure_ascii=False), sid, project_id),
@@ -445,6 +459,8 @@ def get_session_state(project_id: str, sid: str):
 
 @app.post("/projects/{project_id}/sessions/{sid}/chat", response_model=ChatResponse)
 def chat(project_id: str, sid: str, req: ChatRequest):
+    now = datetime.now().isoformat()
+    round_id = uuid.uuid4().hex[:8]
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
@@ -460,6 +476,32 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         state["task"] = req.message
         state["messages"].append({"role": "user", "content": req.message})
         state["status"] = "running"
+        state["current_round_id"] = round_id
+        state["trace"] = []
+        state["final_answer"] = ""
+        state["result_history"] = []
+        state["errors"] = []
+        state["used_tools"] = []
+        state["modified_files"] = []
+        state["task_list"] = []
+        state["current_task_index"] = 0
+        state["current_task"] = ""
+        state["last_tool_result"] = {}
+        state["last_execution"] = {}
+        state["pending_tool_approval"] = None
+        state["pending_loop_approval"] = None
+        state["runtime_metrics"] = {
+            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "llm_calls": 0,
+            "tool_calls": [],
+        }
+
+        conn.execute(
+            """INSERT INTO conversation_rounds
+               (id, session_id, project_id, user_message, status, created_at)
+               VALUES (?, ?, ?, ?, 'running', ?)""",
+            (round_id, sid, project_id, req.message, now),
+        )
 
         conn.execute(
             "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
@@ -470,6 +512,7 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         session_id=sid,
         reply="消息已接收，Agent 开始处理...",
         status="running",
+        round_id=round_id,
     )
 
 
@@ -719,6 +762,76 @@ def get_plan(project_id: str, sid: str):
 
     return [dict(p) for p in plans]
 
+
+@app.get("/projects/{project_id}/sessions/{sid}/rounds", response_model=list[ConversationRoundResponse])
+def list_conversation_rounds(project_id: str, sid: str, limit: int = 8, before: str = ""):
+    limit = max(1, min(int(limit or 8), 50))
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        if before:
+            rounds = conn.execute(
+                """SELECT * FROM conversation_rounds
+                   WHERE session_id = ? AND created_at < ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (sid, before, limit),
+            ).fetchall()
+        else:
+            rounds = conn.execute(
+                """SELECT * FROM conversation_rounds
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (sid, limit),
+            ).fetchall()
+        rounds = list(reversed(rounds))
+        round_refs = conn.execute(
+            "SELECT id, created_at FROM conversation_rounds WHERE session_id = ? ORDER BY created_at ASC",
+            (sid,),
+        ).fetchall()
+        plans = conn.execute(
+            "SELECT *, rowid FROM plans WHERE session_id = ? ORDER BY rowid ASC",
+            (sid,),
+        ).fetchall()
+
+    plans_by_round: Dict[str, list[dict]] = {}
+    round_items = [dict(row) for row in rounds]
+    all_round_items = [dict(row) for row in round_refs]
+    for plan in plans:
+        item = dict(plan)
+        plan_round_id = item.get("round_id") or ""
+        if not plan_round_id:
+            # Backfill display ownership for older plan rows created before round_id existed.
+            plan_created_at = item.get("created_at") or ""
+            for idx, round_item in enumerate(all_round_items):
+                current_created = round_item.get("created_at") or ""
+                next_created = all_round_items[idx + 1].get("created_at") if idx + 1 < len(all_round_items) else None
+                if plan_created_at >= current_created and (not next_created or plan_created_at < next_created):
+                    plan_round_id = round_item["id"]
+                    break
+        if plan_round_id:
+            plans_by_round.setdefault(plan_round_id, []).append(item)
+
+    out = []
+    for item in round_items:
+        try:
+            item["trace_json"] = json.loads(item.get("trace_json") or "[]")
+        except json.JSONDecodeError:
+            item["trace_json"] = []
+        try:
+            item["runtime_metrics_json"] = json.loads(item.get("runtime_metrics_json") or "{}")
+        except json.JSONDecodeError:
+            item["runtime_metrics_json"] = {}
+        item["plans"] = plans_by_round.get(item["id"], [])
+        out.append(item)
+    return out
+
 # ------------------ 9. 用户对计划执行确认操作 ------------------
 
 
@@ -746,11 +859,12 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
         )
         status_map = {
             "agree": "approved",
-            "refine": "refining",
+            "refine": "skipped",
             "skip": "skipped",
             "stop": "stopped",
         }
         new_status = status_map.get(req.action, "pending")
+        session_status = "refining" if req.action == "refine" else new_status
         conn.execute(
             "UPDATE plans SET status = ? WHERE id = ?",
             (new_status, pid),
@@ -778,9 +892,21 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
                 "UPDATE sessions SET state_snapshot = ? WHERE id = ?",
                 (json.dumps(state, ensure_ascii=False), sid),
             )
+            conn.execute(
+                "UPDATE plans SET status = 'skipped' WHERE session_id = ? AND status IN ('pending', 'refining')",
+                (sid,),
+            )
+        if req.action in ("skip", "stop"):
+            state = json.loads(row["state_snapshot"] or "{}")
+            round_id = state.get("current_round_id")
+            if round_id:
+                conn.execute(
+                    "UPDATE conversation_rounds SET status = ?, finished_at = ? WHERE id = ?",
+                    (session_status, datetime.now().isoformat(), round_id),
+                )
         conn.execute(
             "UPDATE sessions SET status = ? WHERE id = ?",
-            (new_status, sid),
+            (session_status, sid),
         )
 
     if req.action == "stop":
@@ -791,6 +917,85 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
         action=req.action,
         status=new_status,
     )
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/command-approval", response_model=CommandApprovalResponse)
+def command_approval(project_id: str, sid: str, req: CommandApprovalRequest):
+    action = (req.action or "").strip().lower()
+    if action not in ("approve", "reject", "revise"):
+        raise HTTPException(status_code=400, detail="action 须为 approve、reject 或 revise")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        state = json.loads(row["state_snapshot"] or "{}")
+        pending = state.get("pending_tool_approval") or {}
+        if pending.get("id") != req.approval_id or pending.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="没有匹配的待确认命令")
+
+        next_status = {
+            "approve": "approved",
+            "reject": "rejected",
+            "revise": "revision_requested",
+        }[action]
+        pending["status"] = next_status
+        pending["feedback"] = (req.feedback or "").strip()
+        state["pending_tool_approval"] = pending
+        state["status"] = "running"
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = 'running' WHERE id = ?",
+            (json.dumps(state, ensure_ascii=False), sid),
+        )
+
+    return CommandApprovalResponse(
+        approval_id=req.approval_id,
+        action=action,
+        status=next_status,
+    )
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/continue-approval", response_model=LoopApprovalResponse)
+def continue_approval(project_id: str, sid: str, req: LoopApprovalRequest):
+    action = (req.action or "").strip().lower()
+    if action not in ("continue", "stop"):
+        raise HTTPException(status_code=400, detail="action 须为 continue 或 stop")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        state = json.loads(row["state_snapshot"] or "{}")
+        pending = state.get("pending_loop_approval") or {}
+        if pending.get("id") != req.approval_id or pending.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="没有匹配的待确认继续请求")
+
+        next_status = "continued" if action == "continue" else "stopped"
+        pending["status"] = next_status
+        state["pending_loop_approval"] = pending
+        state["status"] = "running" if action == "continue" else "stopped"
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
+            (json.dumps(state, ensure_ascii=False), state["status"], sid),
+        )
+
+    if action == "stop":
+        get_cancel_event(sid).set()
+
+    return LoopApprovalResponse(
+        approval_id=req.approval_id,
+        action=action,
+        status=next_status,
+    )
+
 
 # ------------------ 9.5 停止会话运行 ------------------
 
@@ -813,6 +1018,13 @@ def stop_session(project_id: str, sid: str):
             "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
             (sid,),
         )
+        state = json.loads(row["state_snapshot"] or "{}")
+        round_id = state.get("current_round_id")
+        if round_id:
+            conn.execute(
+                "UPDATE conversation_rounds SET status = 'stopped', finished_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), round_id),
+            )
 
     get_cancel_event(sid).set()
 
