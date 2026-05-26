@@ -1,5 +1,6 @@
 """平台级键值设置（与项目/会话隔离），供 IDE 与评测等多入口共享。"""
 import json
+import sqlite3
 import uuid
 from typing import Any, Dict
 
@@ -11,6 +12,21 @@ SKILLS_KEY = "skills"
 DEFAULT_TOOL_NAMES = ("execute_bash", "read_file", "write_file", "web_search", "fetch_url")
 
 
+def _read_setting_value(key: str) -> str | None:
+    """Read a persisted setting, tolerating calls before DB initialization."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM platform_settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "no such table: platform_settings" in str(error):
+            return None
+        raise
+    return row["value"] if row else None
+
+
 def _default_agent_config() -> Dict[str, Any]:
     from agent.backend.config import MODEL
 
@@ -19,15 +35,11 @@ def _default_agent_config() -> Dict[str, Any]:
 
 def get_agent_config() -> Dict[str, Any]:
     base = _default_agent_config()
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM platform_settings WHERE key = ?",
-            (AGENT_CONFIG_KEY,),
-        ).fetchone()
-    if not row:
+    value = _read_setting_value(AGENT_CONFIG_KEY)
+    if value is None:
         return base
     try:
-        stored = json.loads(row["value"])
+        stored = json.loads(value)
         if isinstance(stored, dict):
             base.update({k: v for k, v in stored.items() if v is not None})
     except (json.JSONDecodeError, TypeError):
@@ -59,15 +71,11 @@ def _default_tool_settings() -> Dict[str, bool]:
 
 def get_tool_settings() -> Dict[str, bool]:
     base = _default_tool_settings()
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM platform_settings WHERE key = ?",
-            (TOOL_SETTINGS_KEY,),
-        ).fetchone()
-    if not row:
+    value = _read_setting_value(TOOL_SETTINGS_KEY)
+    if value is None:
         return base
     try:
-        stored = json.loads(row["value"])
+        stored = json.loads(value)
         if isinstance(stored, dict):
             for name in DEFAULT_TOOL_NAMES:
                 if name in stored:
@@ -99,15 +107,11 @@ def is_tool_enabled(name: str) -> bool:
 
 
 def get_skills() -> list[Dict[str, Any]]:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM platform_settings WHERE key = ?",
-            (SKILLS_KEY,),
-        ).fetchone()
-    if not row:
+    value = _read_setting_value(SKILLS_KEY)
+    if value is None:
         return []
     try:
-        stored = json.loads(row["value"])
+        stored = json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return []
     if not isinstance(stored, list):
