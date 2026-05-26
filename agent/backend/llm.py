@@ -180,7 +180,13 @@ def _normalize_plan_step(step: Any) -> str:
     text = re.sub(r"```[\s\S]*?```", " ", text)
     text = re.sub(r"\{[\s\S]*?\}", " ", text)
     text = re.sub(r"\[[\s\S]*?\]", " ", text)
-    text = re.sub(r"\b(command|args|arguments|content|tool_call|function_call|returncode|stdout|stderr)\s*[:=]\s*\\?\"?.*?(,|$)", " ", text, flags=re.I)
+    text = re.sub(
+        r"\b(command|args|arguments|content|tool_call|function_call|returncode|stdout|stderr)"
+        r"\s*[:=]\s*\\?\"?.*?(,|$)",
+        " ",
+        text,
+        flags=re.I,
+    )
     text = " ".join(text.split())
     text = text.strip("-:：,，. {}[]")
 

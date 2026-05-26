@@ -13,7 +13,12 @@ except Exception:
     END = "__end__"
 
 from agent.backend.state import AgentState
-from agent.backend.config import get_effective_model, MAX_STEP_ITERATIONS, MAX_REFLECTIONS, STEP_ITERATIONS_BY_DIFFICULTY
+from agent.backend.config import (
+    get_effective_model,
+    MAX_STEP_ITERATIONS,
+    MAX_REFLECTIONS,
+    STEP_ITERATIONS_BY_DIFFICULTY,
+)
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
@@ -209,8 +214,15 @@ def planner_node(state: AgentState) -> AgentState:
                                 "INSERT INTO plans "
                                 "(id, session_id, project_id, round_id, content, status, created_at) "
                                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                (uuid.uuid4().hex[:8], session_id, state["project_id"], state.get("current_round_id", ""),
-                                 step, "pending", datetime.now().isoformat())
+                                (
+                                    uuid.uuid4().hex[:8],
+                                    session_id,
+                                    state["project_id"],
+                                    state.get("current_round_id", ""),
+                                    step,
+                                    "pending",
+                                    datetime.now().isoformat(),
+                                )
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")
@@ -467,7 +479,13 @@ def executor_node(state: AgentState) -> AgentState:
                             if approval_result == "approved":
                                 state["status"] = "running"
                                 state["pending_tool_approval"]["status"] = "approved"
-                                log_state(trace, "tool_approval", "用户已确认，开始执行命令。", session_id=session_id, state=state)
+                                log_state(
+                                    trace,
+                                    "tool_approval",
+                                    "用户已确认，开始执行命令。",
+                                    session_id=session_id,
+                                    state=state,
+                                )
                                 result_text = func(**function_args)
                                 state["pending_tool_approval"] = None
                             elif approval_result == "rejected":
@@ -475,7 +493,8 @@ def executor_node(state: AgentState) -> AgentState:
                                 output = (
                                     "User rejected this command before execution. "
                                     f"Command was not executed: {command}\n"
-                                    "React to this feedback: choose a safer/different command, explain why no command is needed, "
+                                    "React to this feedback: choose a safer/different command, "
+                                    "explain why no command is needed, "
                                     "or skip the command if appropriate."
                                 )
                                 if approval_feedback:
@@ -494,12 +513,18 @@ def executor_node(state: AgentState) -> AgentState:
                                     (
                                         "User requested changes to the command before execution. "
                                         f"Original command was not executed: {command}\n"
-                                        f"User modification request: {approval_feedback or 'No specific suggestion provided.'}\n"
-                                        "React to this feedback by proposing a revised execute_bash command with a clear purpose, "
+                                        "User modification request: "
+                                        f"{approval_feedback or 'No specific suggestion provided.'}\n"
+                                        "React to this feedback by proposing a revised "
+                                        "execute_bash command with a clear purpose, "
                                         "or skip command execution if it is no longer necessary."
                                     ),
                                     returncode=0,
-                                    meta={"executed": False, "revision_requested": True, "feedback": approval_feedback},
+                                    meta={
+                                        "executed": False,
+                                        "revision_requested": True,
+                                        "feedback": approval_feedback,
+                                    },
                                 )
                                 state["pending_tool_approval"] = None
                             elif approval_result == "stopped":
@@ -507,7 +532,11 @@ def executor_node(state: AgentState) -> AgentState:
                                 result_text = tool_result("error", "Command approval stopped by user", returncode=130)
                             else:
                                 state["status"] = "running"
-                                result_text = tool_result("error", f"Command approval timed out: {command}", returncode=124)
+                                result_text = tool_result(
+                                    "error",
+                                    f"Command approval timed out: {command}",
+                                    returncode=124,
+                                )
                                 state["pending_tool_approval"] = None
                         else:
                             result_text = func(**function_args)
@@ -542,7 +571,11 @@ def executor_node(state: AgentState) -> AgentState:
 
     state["last_tool_result"] = {
         "status": "error",
-        "output": f"Max iterations reached before step completion. limit={current_iteration_limit}, difficulty={state.get('task_difficulty', 'unknown')}",
+        "output": (
+            "Max iterations reached before step completion. "
+            f"limit={current_iteration_limit}, "
+            f"difficulty={state.get('task_difficulty', 'unknown')}"
+        ),
         "returncode": None,
         "action_log": action_log,
     }
@@ -808,7 +841,11 @@ def build_graph():
 
     graph.set_entry_point("planner")
     graph.add_conditional_edges("planner", route_after_planner, {"executor": "executor", "finalize": "finalize"})
-    graph.add_conditional_edges("executor", route_after_executor, {"check_result": "check_result", "finalize": "finalize"})
+    graph.add_conditional_edges(
+        "executor",
+        route_after_executor,
+        {"check_result": "check_result", "finalize": "finalize"},
+    )
     graph.add_conditional_edges(
         "check_result",
         route_after_check,

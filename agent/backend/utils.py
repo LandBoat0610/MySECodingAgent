@@ -258,7 +258,8 @@ def log_state(
                 metrics_json = json.dumps(state.get("runtime_metrics") or {}, ensure_ascii=False)
                 with get_connection() as conn:
                     conn.execute(
-                        "UPDATE conversation_rounds SET trace_json = ?, runtime_metrics_json = ?, status = ? WHERE id = ?",
+                        "UPDATE conversation_rounds SET trace_json = ?, "
+                        "runtime_metrics_json = ?, status = ? WHERE id = ?",
                         (trace_json, metrics_json, state.get("status", "running"), round_id),
                     )
             except Exception as e:

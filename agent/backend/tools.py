@@ -23,13 +23,20 @@ tools = [
             "name": "execute_bash",
             "description": (
                 "Propose a bash command and its purpose. The command will only execute after user approval. "
-                "If the user rejects it or requests changes, react to that feedback and choose another command or skip it."
+                "If the user rejects it or requests changes, react to that feedback "
+                "and choose another command or skip it."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The bash command to execute"},
-                    "purpose": {"type": "string", "description": "A concise user-facing explanation of what this command does and why it is needed"}
+                    "purpose": {
+                        "type": "string",
+                        "description": (
+                            "A concise user-facing explanation of what this command does "
+                            "and why it is needed"
+                        ),
+                    }
                 },
                 "required": ["command", "purpose"]
             }
@@ -150,7 +157,12 @@ def execute_bash(command: str, purpose: str = "") -> str:
                 _terminate_process(proc)
                 stdout, stderr = proc.communicate(timeout=2)
                 combined = f"STDOUT:\n{safe_trim(stdout)}\n\nSTDERR:\n{safe_trim(stderr)}"
-                return tool_result("error", f"Command cancelled by user\n\n{combined}", path=workspace_dir, returncode=130)
+                return tool_result(
+                    "error",
+                    f"Command cancelled by user\n\n{combined}",
+                    path=workspace_dir,
+                    returncode=130,
+                )
             if time.monotonic() > deadline:
                 _terminate_process(proc)
                 stdout, stderr = proc.communicate(timeout=2)
