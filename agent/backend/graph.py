@@ -1,6 +1,7 @@
 # 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
 import re
+import uuid
 import traceback
 from typing import Any, Dict, List, Optional
 
@@ -175,45 +176,69 @@ def _await_bash_approval(session_id: str, function_args: Dict[str, Any], state: 
     if any(re.search(p, command) for p in _BLOCKED):
         risk_level = "high"
 
-    trace = state.get("trace", [])
-    log_state(trace, "bash_approval", f"等待确认: {command}", session_id=session_id, state=state)
+    approval_id = uuid.uuid4().hex[:10]
+    purpose = state.get("current_task", "") or "执行命令"
 
-    approval_json = json.dumps({
-        "status": "pending_approval",
+    pending = {
+        "id": approval_id,
         "tool": "execute_bash",
         "command": command,
-        "reason": state.get("current_task", ""),
+        "purpose": purpose,
         "risk_level": risk_level,
-    }, ensure_ascii=False)
+        "status": "pending",
+        "feedback": "",
+    }
+    state["pending_tool_approval"] = pending
 
-    update_session_state(session_id, state, status="awaiting_bash_approval")
+    trace = state.get("trace", [])
+    log_state(trace, "bash_approval", f"等待确认: {command}", session_id=session_id, state=state)
+    update_session_state(session_id, state, status="pending_approval")
 
     timeout = 60
     start_time = time.time()
     while time.time() - start_time < timeout:
-        with get_connection() as conn:
-            row = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row:
-                st = row["status"]
-                if st == "approved":
-                    update_session_state(session_id, state, status="running")
-                    log_state(trace, "bash_approval", "用户已确认,执行命令", session_id=session_id, state=state)
-                    return None
-                if st == "rejected":
-                    update_session_state(session_id, state, status="running")
-                    log_state(trace, "bash_approval", "用户拒绝,跳过命令", session_id=session_id, state=state)
-                    return tool_result("error", f"User rejected command: {command}", error_type="rejected",
-                                       summary=f"命令已被用户拒绝")
-                if st == "stopped":
-                    update_session_state(session_id, state, status="stopped")
-                    return tool_result("error", "Session stopped", error_type="stopped",
-                                       summary="会话已终止")
         time.sleep(2)
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_snapshot FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                continue
+            snap = json.loads(row["state_snapshot"] or "{}")
+            pending_now = snap.get("pending_tool_approval") or {}
+            st = pending_now.get("status", "")
 
+            if st == "approved":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户已确认,执行命令", session_id=session_id, state=state)
+                return None
+            if st == "rejected":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户拒绝,跳过命令", session_id=session_id, state=state)
+                msg = f"用户拒绝: {command}"
+                if feedback:
+                    msg += f" ({feedback})"
+                return tool_result("error", msg, error_type="rejected", summary=msg)
+            if st == "revision_requested":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", f"用户要求修改: {feedback}", session_id=session_id, state=state)
+                return tool_result("error", f"用户要求修改: {feedback}", error_type="revision_requested",
+                                   summary=f"用户要求修改: {feedback}")
+            if st == "stopped":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="stopped")
+                return tool_result("error", "Session stopped", error_type="stopped", summary="会话已终止")
+
+    state.pop("pending_tool_approval", None)
     update_session_state(session_id, state, status="running")
     log_state(trace, "bash_approval", "确认超时,跳过命令", session_id=session_id, state=state)
     return tool_result("error", f"Approval timeout for command: {command}", error_type="timeout",
-                       summary=f"命令确认超时")
+                       summary=f"命令确认超时: {command}")
 
 
 def executor_node(state: AgentState) -> AgentState:
