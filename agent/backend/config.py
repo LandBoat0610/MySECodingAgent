@@ -11,6 +11,11 @@ TRACE_JSON = "agent_trace.json"
 TRACE_MERMAID = "agent_trace.mmd"
 MAX_TOOL_OUTPUT = 4000
 MAX_STEP_ITERATIONS = 5
+STEP_ITERATIONS_BY_DIFFICULTY = {
+    "easy": 4,
+    "medium": 7,
+    "hard": 10,
+}
 MAX_REFLECTIONS = 2
 DEFAULT_WORKSPACE_PREFIX = "zizhiagent_workspace_"
 
