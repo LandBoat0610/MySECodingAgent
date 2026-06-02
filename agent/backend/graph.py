@@ -1,8 +1,8 @@
 # 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
+import re
 import traceback
-import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 try:
     from langgraph.graph import StateGraph, END
@@ -13,18 +13,12 @@ except Exception:
     END = "__end__"
 
 from agent.backend.state import AgentState
-from agent.backend.config import (
-    get_effective_model,
-    MAX_STEP_ITERATIONS,
-    MAX_REFLECTIONS,
-    STEP_ITERATIONS_BY_DIFFICULTY,
-)
+from agent.backend.config import get_effective_model, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
-from agent.backend.platform_settings import get_tool_settings, is_tool_enabled
 
 import time
 from agent.backend.database import get_connection
@@ -57,84 +51,6 @@ def wait_for_plan_approval(session_id: str) -> str:
     return "timeout"
 
 
-def wait_for_tool_approval(session_id: str, approval_id: str) -> Dict[str, Any]:
-    timeout = 300
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
-                (session_id,)
-            ).fetchone()
-
-        if row:
-            if row["status"] == "stopped":
-                return {"status": "stopped", "feedback": ""}
-            try:
-                snapshot = json.loads(row["state_snapshot"] or "{}")
-            except json.JSONDecodeError:
-                snapshot = {}
-            pending = snapshot.get("pending_tool_approval") or {}
-            if pending.get("id") == approval_id:
-                status = pending.get("status")
-                if status in ("approved", "rejected", "revision_requested"):
-                    return {"status": status, "feedback": pending.get("feedback") or ""}
-
-        time.sleep(0.5)
-
-    return {"status": "timeout", "feedback": ""}
-
-
-def wait_for_loop_approval(session_id: str, approval_id: str) -> str:
-    timeout = 300
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
-                (session_id,)
-            ).fetchone()
-
-        if row:
-            if row["status"] == "stopped":
-                return "stopped"
-            try:
-                snapshot = json.loads(row["state_snapshot"] or "{}")
-            except json.JSONDecodeError:
-                snapshot = {}
-            pending = snapshot.get("pending_loop_approval") or {}
-            if pending.get("id") == approval_id:
-                status = pending.get("status")
-                if status in ("continued", "stopped"):
-                    return status
-
-        time.sleep(0.5)
-
-    return "timeout"
-
-
-def _refresh_plan_feedback(state: AgentState) -> None:
-    session_id = state.get("session_id")
-    if not session_id:
-        return
-    try:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT state_snapshot FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if not row:
-            return
-        snapshot = json.loads(row["state_snapshot"] or "{}")
-        feedback = snapshot.get("plan_feedback", "")
-        if feedback:
-            state["plan_feedback"] = feedback
-    except Exception:
-        return
-
-
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
@@ -143,11 +59,7 @@ def planner_node(state: AgentState) -> AgentState:
         return state
 
     steps = create_plan(state["task"], state.get("memory", ""), trace, state)
-    if _check_cancel(state):
-        return state
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
-    if _check_cancel(state):
-        return state
 
     state["task_list"] = steps
     state["current_task_index"] = 0
@@ -165,9 +77,9 @@ def planner_node(state: AgentState) -> AgentState:
                 for step in steps:
                     conn.execute(
                         "INSERT INTO plans "
-                        "(id, session_id, project_id, round_id, content, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (uuid.uuid4().hex[:8], session_id, state["project_id"], state.get("current_round_id", ""),
+                        "(id, session_id, project_id, content, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex[:8], session_id, state["project_id"],
                          step, "pending", datetime.now().isoformat())
                     )
         except Exception as e:
@@ -190,13 +102,8 @@ def planner_node(state: AgentState) -> AgentState:
             state["status"] = "running"
             update_session_state(session_id, state, status="running")
             log_state(trace, "planner", "用户要求再优化，重新生成计划...", session_id=session_id, state=state)
-            _refresh_plan_feedback(state)
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
-            if _check_cancel(state):
-                return state
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
-            if _check_cancel(state):
-                return state
             state["task_list"] = steps
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
@@ -212,17 +119,10 @@ def planner_node(state: AgentState) -> AgentState:
                         for step in steps:
                             conn.execute(
                                 "INSERT INTO plans "
-                                "(id, session_id, project_id, round_id, content, status, created_at) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                (
-                                    uuid.uuid4().hex[:8],
-                                    session_id,
-                                    state["project_id"],
-                                    state.get("current_round_id", ""),
-                                    step,
-                                    "pending",
-                                    datetime.now().isoformat(),
-                                )
+                                "(id, session_id, project_id, content, status, created_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (uuid.uuid4().hex[:8], session_id, state["project_id"],
+                                 step, "pending", datetime.now().isoformat())
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")
@@ -248,20 +148,9 @@ def planner_node(state: AgentState) -> AgentState:
 
 def _check_cancel(state: AgentState) -> bool:
     cancel_event = state.get("_cancel_event")
-    session_id = state.get("session_id")
-    cancelled = bool(cancel_event and cancel_event.is_set())
-    if not cancelled and session_id:
-        try:
-            with get_connection() as conn:
-                row = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
-                cancelled = bool(row and row["status"] == "stopped")
-        except Exception:
-            cancelled = False
-
-    if cancelled:
-        if cancel_event:
-            cancel_event.set()
+    if cancel_event and cancel_event.is_set():
         state["status"] = "stopped"
+        session_id = state.get("session_id")
         trace = state.get("trace", [])
         if session_id:
             from agent.backend.utils import update_session_state
@@ -271,6 +160,60 @@ def _check_cancel(state: AgentState) -> bool:
             _log(trace, "cancelled", "Agent execution cancelled by user", session_id=session_id, state=state)
         return True
     return False
+
+
+def _await_bash_approval(session_id: str, function_args: Dict[str, Any], state: AgentState) -> Optional[str]:
+    from agent.backend.utils import update_session_state, tool_result
+    from agent.backend.database import get_connection
+    from agent.backend.config import BLOCKED_BASH_PATTERNS as _BLOCKED
+
+    command = function_args.get("command", "")
+    if not command.strip():
+        return tool_result("error", "Empty bash command", error_type="validation")
+
+    risk_level = "low"
+    if any(re.search(p, command) for p in _BLOCKED):
+        risk_level = "high"
+
+    trace = state.get("trace", [])
+    log_state(trace, "bash_approval", f"等待确认: {command}", session_id=session_id, state=state)
+
+    approval_json = json.dumps({
+        "status": "pending_approval",
+        "tool": "execute_bash",
+        "command": command,
+        "reason": state.get("current_task", ""),
+        "risk_level": risk_level,
+    }, ensure_ascii=False)
+
+    update_session_state(session_id, state, status="awaiting_bash_approval")
+
+    timeout = 60
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        with get_connection() as conn:
+            row = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row:
+                st = row["status"]
+                if st == "approved":
+                    update_session_state(session_id, state, status="running")
+                    log_state(trace, "bash_approval", "用户已确认,执行命令", session_id=session_id, state=state)
+                    return None
+                if st == "rejected":
+                    update_session_state(session_id, state, status="running")
+                    log_state(trace, "bash_approval", "用户拒绝,跳过命令", session_id=session_id, state=state)
+                    return tool_result("error", f"User rejected command: {command}", error_type="rejected",
+                                       summary=f"命令已被用户拒绝")
+                if st == "stopped":
+                    update_session_state(session_id, state, status="stopped")
+                    return tool_result("error", "Session stopped", error_type="stopped",
+                                       summary="会话已终止")
+        time.sleep(2)
+
+    update_session_state(session_id, state, status="running")
+    log_state(trace, "bash_approval", "确认超时,跳过命令", session_id=session_id, state=state)
+    return tool_result("error", f"Approval timeout for command: {command}", error_type="timeout",
+                       summary=f"命令确认超时")
 
 
 def executor_node(state: AgentState) -> AgentState:
@@ -285,9 +228,6 @@ def executor_node(state: AgentState) -> AgentState:
     step_task = state.get("current_task", state["task"])
     system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
-    tools_module.CURRENT_CANCEL_EVENT = state.get("_cancel_event")
-    enabled_tools = get_tool_settings()
-    active_tools = [tool for tool in tools if enabled_tools.get(tool["function"]["name"], True)]
 
     messages.append({"role": "system", "content": system_prompt})
     step_context = (
@@ -301,89 +241,19 @@ def executor_node(state: AgentState) -> AgentState:
     messages.append({"role": "user", "content": step_context})
     action_log: List[Dict[str, Any]] = []
 
-    step_iteration_limit = STEP_ITERATIONS_BY_DIFFICULTY.get(
-        str(state.get("task_difficulty") or "").lower(),
-        MAX_STEP_ITERATIONS,
-    )
-
-    iteration = 0
-    current_iteration_limit = step_iteration_limit
-    while True:
-        if iteration >= current_iteration_limit:
-            if not session_id:
-                break
-            approval_id = uuid.uuid4().hex[:8]
-            state["pending_loop_approval"] = {
-                "id": approval_id,
-                "status": "pending",
-                "current_iteration": iteration,
-                "current_limit": current_iteration_limit,
-                "additional_iterations": step_iteration_limit,
-                "difficulty": state.get("task_difficulty", "unknown"),
-                "current_task": step_task,
-            }
-            state["status"] = "awaiting_continue_approval"
-            log_state(
-                trace,
-                "continue_approval",
-                (
-                    f"当前步骤已达到 {current_iteration_limit} 轮工具调用上限。"
-                    f"如需继续处理步骤“{step_task}”，请确认继续。"
-                ),
-                session_id=session_id,
-                state=state,
-            )
-            approval_result = wait_for_loop_approval(session_id, approval_id)
-            if approval_result == "continued":
-                state["status"] = "running"
-                state["pending_loop_approval"] = None
-                current_iteration_limit += step_iteration_limit
-                log_state(
-                    trace,
-                    "continue_approval",
-                    f"用户确认继续，当前步骤工具调用上限扩展到 {current_iteration_limit} 轮。",
-                    session_id=session_id,
-                    state=state,
-                )
-            else:
-                state["pending_loop_approval"] = None
-                if approval_result == "stopped":
-                    state["status"] = "stopped"
-                    return state
-                state["last_tool_result"] = {
-                    "status": "error",
-                    "output": (
-                        "Max iterations reached before step completion. "
-                        f"limit={current_iteration_limit}, difficulty={state.get('task_difficulty', 'unknown')}, "
-                        f"approval={approval_result}"
-                    ),
-                    "returncode": None,
-                    "action_log": action_log,
-                }
-                state.setdefault("errors", []).append(state["last_tool_result"])
-                if session_id:
-                    from agent.backend.utils import update_session_state
-                    update_session_state(session_id, state)
-                return state
-
+    for iteration in range(MAX_STEP_ITERATIONS):
         if _check_cancel(state):
             return state
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
-        iteration += 1
         try:
-            kwargs = {"model": get_effective_model(), "messages": messages}
-            if active_tools:
-                kwargs["tools"] = active_tools
-            response = client.chat.completions.create(**kwargs)
+            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
             record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
             state.setdefault("errors", []).append(state["last_tool_result"])
             if session_id:
                 from agent.backend.utils import update_session_state
-            update_session_state(session_id, state)
-            return state
-        if _check_cancel(state):
+                update_session_state(session_id, state)
             return state
 
         message = response.choices[0].message
@@ -410,8 +280,6 @@ def executor_node(state: AgentState) -> AgentState:
             return state
 
         for tool_call in message.tool_calls:
-            if _check_cancel(state):
-                return state
             function_payload = getattr(tool_call, "function", None)
             if function_payload is None:
                 continue
@@ -419,14 +287,7 @@ def executor_node(state: AgentState) -> AgentState:
             function_name = str(getattr(function_payload, "name", ""))
             raw_arguments = str(getattr(function_payload, "arguments", ""))
             function_args = parse_tool_arguments(raw_arguments)
-            log_state(
-                trace,
-                "act",
-                f"{function_name}({function_args})",
-                meta={"tool": function_name, "args": function_args},
-                session_id=session_id,
-                state=state,
-            )
+            log_state(trace, "act", f"{function_name}({function_args})", session_id=session_id, state=state)
 
             # 如果工具是写文件，就把它的路径记录下来
             if function_name == "write_file" and "path" in function_args:
@@ -438,106 +299,23 @@ def executor_node(state: AgentState) -> AgentState:
                 record_tool_call(state, function_name, False, 0.0)
             else:
                 func = available_functions.get(function_name)
-                if not is_tool_enabled(function_name):
-                    result_text = tool_result("error", f"Tool disabled: {function_name}")
-                    parsed_result = parse_json_object(result_text)
-                    record_tool_call(state, function_name, False, 0.0)
-                elif func is None:
+                if func is None:
                     result_text = tool_result("error", f"Unknown tool: {function_name}")
                     parsed_result = parse_json_object(result_text)
                     record_tool_call(state, function_name, False, 0.0)
                 else:
-                    if _check_cancel(state):
-                        return state
                     t0 = time.monotonic()
                     try:
-                        if function_name == "execute_bash" and session_id:
-                            approval_id = uuid.uuid4().hex[:8]
-                            command = str(function_args.get("command") or "")
-                            purpose = str(function_args.get("purpose") or "").strip()
-                            if not purpose:
-                                purpose = "Agent 请求执行该命令以完成当前步骤。"
-                            state["pending_tool_approval"] = {
-                                "id": approval_id,
-                                "tool": function_name,
-                                "command": command,
-                                "purpose": purpose,
-                                "status": "pending",
-                            }
-                            state["status"] = "awaiting_tool_approval"
-                            log_state(
-                                trace,
-                                "tool_approval",
-                                f"等待用户确认命令: {command}\n作用: {purpose}",
-                                meta={"pending_tool_approval": state["pending_tool_approval"]},
-                                session_id=session_id,
-                                state=state,
-                            )
-                            approval = wait_for_tool_approval(session_id, approval_id)
-                            approval_result = approval.get("status", "timeout")
-                            approval_feedback = str(approval.get("feedback") or "").strip()
-                            if approval_result == "approved":
-                                state["status"] = "running"
-                                state["pending_tool_approval"]["status"] = "approved"
-                                log_state(
-                                    trace,
-                                    "tool_approval",
-                                    "用户已确认，开始执行命令。",
-                                    session_id=session_id,
-                                    state=state,
-                                )
-                                result_text = func(**function_args)
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "rejected":
-                                state["status"] = "running"
-                                output = (
-                                    "User rejected this command before execution. "
-                                    f"Command was not executed: {command}\n"
-                                    "React to this feedback: choose a safer/different command, "
-                                    "explain why no command is needed, "
-                                    "or skip the command if appropriate."
-                                )
-                                if approval_feedback:
-                                    output += f"\nUser feedback: {approval_feedback}"
-                                result_text = tool_result(
-                                    "success",
-                                    output,
-                                    returncode=0,
-                                    meta={"executed": False, "rejected": True, "feedback": approval_feedback},
-                                )
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "revision_requested":
-                                state["status"] = "running"
-                                result_text = tool_result(
-                                    "success",
-                                    (
-                                        "User requested changes to the command before execution. "
-                                        f"Original command was not executed: {command}\n"
-                                        "User modification request: "
-                                        f"{approval_feedback or 'No specific suggestion provided.'}\n"
-                                        "React to this feedback by proposing a revised "
-                                        "execute_bash command with a clear purpose, "
-                                        "or skip command execution if it is no longer necessary."
-                                    ),
-                                    returncode=0,
-                                    meta={
-                                        "executed": False,
-                                        "revision_requested": True,
-                                        "feedback": approval_feedback,
-                                    },
-                                )
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "stopped":
-                                state["status"] = "stopped"
-                                result_text = tool_result("error", "Command approval stopped by user", returncode=130)
+                        if function_name == "execute_bash":
+                            from agent.backend.config import BASH_APPROVAL_REQUIRED
+                            if BASH_APPROVAL_REQUIRED and session_id and "_approved" not in function_args:
+                                result_text = _await_bash_approval(session_id, function_args, state)
+                                if result_text is not None:
+                                    pass
+                                else:
+                                    result_text = func(**function_args)
                             else:
-                                state["status"] = "running"
-                                result_text = tool_result(
-                                    "error",
-                                    f"Command approval timed out: {command}",
-                                    returncode=124,
-                                )
-                                state["pending_tool_approval"] = None
+                                result_text = func(**function_args)
                         else:
                             result_text = func(**function_args)
                     except Exception as e:
@@ -546,8 +324,6 @@ def executor_node(state: AgentState) -> AgentState:
                     parsed_result = parse_json_object(result_text)
                     ok = parsed_result.get("status") != "error"
                     record_tool_call(state, function_name, ok, elapsed_ms)
-                    if _check_cancel(state):
-                        return state
 
             action_log.append({"tool": function_name, "args": function_args, "result": parsed_result})
             state.setdefault("used_tools", []).append(function_name)
@@ -571,11 +347,7 @@ def executor_node(state: AgentState) -> AgentState:
 
     state["last_tool_result"] = {
         "status": "error",
-        "output": (
-            "Max iterations reached before step completion. "
-            f"limit={current_iteration_limit}, "
-            f"difficulty={state.get('task_difficulty', 'unknown')}"
-        ),
+        "output": "Max iterations reached before step completion.",
         "returncode": None,
         "action_log": action_log,
     }
@@ -587,8 +359,6 @@ def executor_node(state: AgentState) -> AgentState:
 
 
 def check_result_node(state: AgentState) -> AgentState:
-    if state.get("status") == "stopped":
-        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
@@ -651,8 +421,6 @@ def check_result_node(state: AgentState) -> AgentState:
 
 
 def modify_code_node(state: AgentState) -> AgentState:
-    if state.get("status") == "stopped":
-        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
@@ -691,8 +459,6 @@ def modify_code_node(state: AgentState) -> AgentState:
             ),
             state,
         )
-        if _check_cancel(state):
-            return state
         updated_code = data.get("updated_code", "")
         diagnosis = data.get("diagnosis", "")
         summary = data.get("summary", "")
@@ -725,26 +491,18 @@ def finalize_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id")
     used_tools = sorted(set(state.get("used_tools", [])))
     result_history = "\n\n".join(state.get("result_history", []))
-    if state.get("status") == "stopped":
-        final_summary = (
-            f"Overall task: {state['task']}\n\n"
-            "Execution was stopped by the user. No further agent steps will be run.\n\n"
-            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-            "Final status: stopped"
-        )
-    else:
-        final_summary = (
-            f"Overall task: {state['task']}\n\n"
-            f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
-            f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
-            f"Target file: {state.get('target_file', '')}\n"
-            f"Run command: {state.get('run_command', '')}\n\n"
-            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-            f"Final status: {state.get('status', 'unknown')}"
-        )
+    final_summary = (
+        f"Overall task: {state['task']}\n\n"
+        f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
+        f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
+        f"Target file: {state.get('target_file', '')}\n"
+        f"Run command: {state.get('run_command', '')}\n\n"
+        f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
+        f"Final status: {state.get('status', 'unknown')}"
+    )
     state["final_answer"] = final_summary
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
-    if not state.get("eval_mode") and state.get("status") != "stopped":
+    if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
 
     if session_id:
@@ -753,26 +511,6 @@ def finalize_node(state: AgentState) -> AgentState:
         if final_status not in ("stopped", "skipped"):
             final_status = "completed"
         update_session_state(session_id, state, status=final_status)
-        round_id = state.get("current_round_id")
-        if round_id:
-            try:
-                from datetime import datetime
-                with get_connection() as conn:
-                    conn.execute(
-                        """UPDATE conversation_rounds
-                           SET status = ?, finished_at = ?, final_answer = ?, trace_json = ?, runtime_metrics_json = ?
-                           WHERE id = ?""",
-                        (
-                            final_status,
-                            datetime.now().isoformat(),
-                            final_summary,
-                            json.dumps(state.get("trace") or [], ensure_ascii=False),
-                            json.dumps(state.get("runtime_metrics") or {}, ensure_ascii=False),
-                            round_id,
-                        ),
-                    )
-            except Exception as e:
-                print(f"Error finalizing conversation round: {e}")
 
     return state
 
@@ -794,27 +532,7 @@ def route_after_check(state: AgentState) -> str:
     return "finalize"
 
 
-def route_after_planner(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "executor"
-
-
-def route_after_executor(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "check_result"
-
-
-def route_after_modify(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "executor"
-
-
 def next_step_node(state: AgentState) -> AgentState:
-    if _check_cancel(state):
-        return state
     idx = state.get("current_task_index", 0) + 1
     state["current_task_index"] = idx
     tasks = state.get("task_list", [])
@@ -840,12 +558,8 @@ def build_graph():
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("planner")
-    graph.add_conditional_edges("planner", route_after_planner, {"executor": "executor", "finalize": "finalize"})
-    graph.add_conditional_edges(
-        "executor",
-        route_after_executor,
-        {"check_result": "check_result", "finalize": "finalize"},
-    )
+    graph.add_edge("planner", "executor")
+    graph.add_edge("executor", "check_result")
     graph.add_conditional_edges(
         "check_result",
         route_after_check,
@@ -855,7 +569,7 @@ def build_graph():
             "finalize": "finalize",
         },
     )
-    graph.add_conditional_edges("modify_code", route_after_modify, {"executor": "executor", "finalize": "finalize"})
+    graph.add_edge("modify_code", "executor")
     graph.add_edge("next_step", "executor")
     graph.add_edge("finalize", END)
     return graph.compile()

@@ -1,0 +1,312 @@
+{
+  "name": "toolchain-baseline-v2",
+  "description": "Agent 工具链基准评测数据集 v2。覆盖 12 个工具 (execute_bash / read_file / read_file_range / write_file / apply_patch / list_files / search_code / web_search / fetch_url / get_git_diff / run_tests / run_lint) 的典型场景、边界条件和错误路径，以及多工具组合场景。共 51 条用例。",
+  "items": [
+    {
+      "id": "bash_001_happy_echo",
+      "description": "在当前工作目录下执行命令 echo 'hello agent test' 并确认命令成功执行，将输出结果汇报给我。",
+      "expected_output": "hello agent test",
+      "test_cases": [{"input": "命令执行成功", "expected": "hello agent test"}]
+    },
+    {
+      "id": "bash_002_happy_list",
+      "description": "使用 list_files 或 execute_bash('dir') 查看当前工作目录内容，告诉我当前目录下有哪些文件或子目录。",
+      "expected_output": "success",
+      "test_cases": [{"input": "列出目录内容", "expected": "success"}]
+    },
+    {
+      "id": "bash_003_edge_empty",
+      "description": "在当前工作目录中创建一个空的批处理文件 empty.bat，内容为 'rem nothing'，然后执行它。只需要汇报命令是否成功执行，不需要检查输出内容。",
+      "expected_output": "success",
+      "test_cases": [{"input": "空命令执行", "expected": "success"}]
+    },
+    {
+      "id": "bash_004_edge_unicode",
+      "description": "执行 echo 命令打印中文内容 '你好世界'，报告输出的内容。",
+      "expected_output": "你好世界",
+      "test_cases": [{"input": "中文输出", "expected": "你好世界"}]
+    },
+    {
+      "id": "bash_005_bad_blocked",
+      "description": "执行命令 rm -rf /。系统应该拒绝执行该危险命令，你需要把错误信息汇报出来。",
+      "expected_output": "Blocked",
+      "test_cases": [{"input": "危险命令被拦截", "expected": "Blocked"}]
+    },
+    {
+      "id": "bash_006_bad_nonexist",
+      "description": "执行一个不存在的命令 nonexistent_command_xyz_123。命令会失败，请把失败的情况如实汇报给我。",
+      "expected_output": "failed",
+      "test_cases": [{"input": "命令失败", "expected": "error"}]
+    },
+    {
+      "id": "list_001_happy_files",
+      "description": "先创建三个文件 a.txt、b.txt、c.txt，然后使用 list_files 工具列出当前目录的所有文件。汇报列出的文件名。",
+      "expected_output": "success",
+      "test_cases": [{"input": "列出文件", "expected": "success"}]
+    },
+    {
+      "id": "list_002_edge_nested",
+      "description": "创建目录结构 dir/sub/file.txt，然后用 list_files 列出 dir 目录的内容，告诉我里面有哪些子条目。",
+      "expected_output": "success",
+      "test_cases": [{"input": "列出嵌套目录", "expected": "success"}]
+    },
+    {
+      "id": "list_003_edge_empty",
+      "description": "在一个空目录中使用 list_files 列出内容，汇报当前目录为空。",
+      "expected_output": "success",
+      "test_cases": [{"input": "空目录列出", "expected": "success"}]
+    },
+    {
+      "id": "srch_001_happy_find",
+      "description": "先创建文件 data.txt，写入多行内容 'foo\nbar\nbaz'，然后使用 search_code 在 data.txt 中搜索 'bar'，汇报搜索结果。",
+      "expected_output": "bar",
+      "test_cases": [{"input": "搜索成功", "expected": "bar"}]
+    },
+    {
+      "id": "srch_002_edge_none",
+      "description": "先创建文件 data.txt，写入内容 'hello world'，然后使用 search_code 在 data.txt 中搜索一个不存在的字符串 'xyznotfound'，汇报搜索无结果。",
+      "expected_output": "success",
+      "test_cases": [{"input": "搜索无结果", "expected": "success"}]
+    },
+    {
+      "id": "srch_003_edge_regex",
+      "description": "先创建文件 log.txt，内容为多行 'error: disk full\ninfo: started\nwarning: low memory\ninfo: done'，然后使用 search_code 在 log.txt 中用正则模式搜索包含 'error|warning' 的行，汇报匹配到的行。",
+      "expected_output": "error",
+      "test_cases": [{"input": "正则搜索", "expected": "error"}]
+    },
+    {
+      "id": "range_001_happy_head",
+      "description": "先创建一个文件 lines.txt，写入 10 行内容，每行编号 'line1' 到 'line10'。然后使用 read_file_range 读取第 1 到第 3 行，汇报读取到的内容。",
+      "expected_output": "line1",
+      "test_cases": [{"input": "读取行范围", "expected": "line1"}]
+    },
+    {
+      "id": "range_002_edge_offset",
+      "description": "先创建一个文件 lines.txt，写入 10 行内容，然后使用 read_file_range 从第 8 行开始读取（不传 limit），汇报读取到的行。",
+      "expected_output": "line8",
+      "test_cases": [{"input": "偏移读取", "expected": "line8"}]
+    },
+    {
+      "id": "range_003_bad_out_of_range",
+      "description": "先创建一个只有 3 行的文件 short.txt，然后使用 read_file_range 尝试从第 100 行开始读取，汇报结果为无内容或错误。",
+      "expected_output": "success",
+      "test_cases": [{"input": "越界读取", "expected": "success"}]
+    },
+    {
+      "id": "patch_001_happy_apply",
+      "description": "先创建文件 target.py，内容为 'def foo():\n    return 1'。然后创建一个 patch 文件 fix.patch，内容为标准 unified diff 格式，把 'return 1' 改成 'return 2'。使用 apply_patch 应用该 patch，然后读取 target.py 确认内容已变为 'return 2'，汇报确认结果。",
+      "expected_output": "success",
+      "test_cases": [{"input": "应用patch成功", "expected": "success"}]
+    },
+    {
+      "id": "patch_002_bad_conflict",
+      "description": "先创建文件 target.py，内容为 'def foo():\n    return 1'。然后创建一个内容不匹配的假 patch 文件 bad.patch（描述不存在行的上下文），使用 apply_patch 尝试应用它，汇报应用失败的原因。",
+      "expected_output": "error",
+      "test_cases": [{"input": "patch冲突", "expected": "error"}]
+    },
+    {
+      "id": "patch_003_bad_invalid",
+      "description": "创建文件 junk.patch，内容为纯文本 'this is not a valid patch'，使用 apply_patch 尝试应用它，汇报应用失败。",
+      "expected_output": "error",
+      "test_cases": [{"input": "无效patch", "expected": "error"}]
+    },
+    {
+      "id": "diff_001_happy_staged",
+      "description": "通过 execute_bash 初始化一个 git 仓库：git init && git config user.email test@test.com && git config user.name test。然后创建文件 hello.py 内容为 'print(1)'，git add hello.py，使用 get_git_diff --staged 查看暂存区的差异，汇报文件 hello.py 出现在 diff 中。",
+      "expected_output": "hello.py",
+      "test_cases": [{"input": "暂存区diff", "expected": "hello.py"}]
+    },
+    {
+      "id": "diff_002_edge_unstaged",
+      "description": "在已有 git 仓库中，创建文件 a.txt 内容 'old'，git add 并 git commit -m init。然后修改 a.txt 内容为 'new'，使用 get_git_diff 查看未暂存的差异，汇报变更中包含 'old' 到 'new' 的字样。",
+      "expected_output": "new",
+      "test_cases": [{"input": "未暂存diff", "expected": "new"}]
+    },
+    {
+      "id": "diff_003_edge_clean",
+      "description": "在已有 git 仓库中（git init 后），使用 get_git_diff 查看差异，如果没有任何变更，汇报仓库是干净的。",
+      "expected_output": "success",
+      "test_cases": [{"input": "无diff", "expected": "success"}]
+    },
+    {
+      "id": "test_001_happy_pass",
+      "description": "先创建文件 test_calc.py，内容为 'def test_add(): assert 1+1==2'，确保 pytest 可用（如果没有则 pip install pytest）。然后使用 run_tests 运行该测试文件，汇报测试通过。",
+      "expected_output": "passed",
+      "test_cases": [{"input": "测试通过", "expected": "passed"}]
+    },
+    {
+      "id": "test_002_bad_fail",
+      "description": "先创建文件 test_bad.py，内容为 'def test_bad(): assert 1==2'，确保 pytest 可用。然后使用 run_tests 运行该测试文件，汇报测试失败。",
+      "expected_output": "error",
+      "test_cases": [{"input": "测试失败", "expected": "error"}]
+    },
+    {
+      "id": "test_003_edge_empty",
+      "description": "确保当前目录下没有 test_*.py 文件，然后使用 run_tests 运行测试。如果没有任何测试文件，汇报这个情况。",
+      "expected_output": "success",
+      "test_cases": [{"input": "无测试文件", "expected": "success"}]
+    },
+    {
+      "id": "lint_001_happy_clean",
+      "description": "先创建文件 clean.py，内容为合法 Python 代码 'def hello():\n    return \"world\"'，确保 flake8 可用（如果没有则 pip install flake8）。然后使用 run_lint 检查 clean.py，汇报代码没有 lint 错误。",
+      "expected_output": "success",
+      "test_cases": [{"input": "无lint错误", "expected": "success"}]
+    },
+    {
+      "id": "lint_002_bad_errors",
+      "description": "先创建文件 messy.py，内容为 'import os\nimport sys\nx=1\n'，确保 flake8 可用。然后使用 run_lint 检查 messy.py，汇报 lint 发现的错误信息。",
+      "expected_output": "success",
+      "test_cases": [{"input": "有lint错误", "expected": "success"}]
+    },
+    {
+      "id": "lint_003_bad_missing",
+      "description": "使用 run_lint 尝试检查一个不存在的文件 noexist.py，汇报工具返回的错误信息。",
+      "expected_output": "error",
+      "test_cases": [{"input": "文件不存在", "expected": "error"}]
+    },
+    {
+      "id": "read_001_happy_simple",
+      "description": "先创建一个文件 note.txt，写入内容 'Hello from test case read_001'，然后读取该文件的内容并汇报。",
+      "expected_output": "Hello from test case read_001",
+      "test_cases": [{"input": "读取文件内容", "expected": "Hello from test case read_001"}]
+    },
+    {
+      "id": "read_002_happy_subdir",
+      "description": "在子目录 configs 下创建文件 settings.txt，内容为 'port=8080'，然后读取该文件并报告内容。",
+      "expected_output": "port=8080",
+      "test_cases": [{"input": "读取子目录文件", "expected": "port=8080"}]
+    },
+    {
+      "id": "read_003_edge_empty",
+      "description": "先创建一个空文件 blank.txt（内容为空字符串），然后读取它。汇报读取结果。",
+      "expected_output": "success",
+      "test_cases": [{"input": "空文件读取", "expected": "success"}]
+    },
+    {
+      "id": "read_004_bad_missing",
+      "description": "读取一个不存在的文件 no_such_file_xyz_999.txt。请汇报读取失败的具体原因。",
+      "expected_output": "error",
+      "test_cases": [{"input": "文件不存在", "expected": "error"}]
+    },
+    {
+      "id": "read_005_bad_escape",
+      "description": "尝试读取路径 '../../etc/hosts' 的文件，系统应拒绝越权访问。请汇报这个错误。",
+      "expected_output": "escapes",
+      "test_cases": [{"input": "路径逃逸被拦截", "expected": "escapes"}]
+    },
+    {
+      "id": "write_001_happy_new",
+      "description": "创建一个名为 greeting.txt 的新文件，写入内容 'Welcome to Agent Platform'，然后确认文件创建成功并报告文件名。",
+      "expected_output": "greeting",
+      "test_cases": [{"input": "创建文件", "expected": "greeting"}]
+    },
+    {
+      "id": "write_002_happy_overwrite",
+      "description": "先创建文件 counter.txt，写入 '1'，然后再次写入 '2' 覆盖原内容。确认最终文件内容为 '2' 并汇报。",
+      "expected_output": "2",
+      "test_cases": [{"input": "覆盖写文件", "expected": "2"}]
+    },
+    {
+      "id": "write_003_edge_nested",
+      "description": "在深层嵌套目录 a/b/c/d 下创建文件 deep.txt，写入内容 'deep file'，然后汇报创建结果。",
+      "expected_output": "deep",
+      "test_cases": [{"input": "嵌套目录创建", "expected": "deep"}]
+    },
+    {
+      "id": "write_004_edge_empty_content",
+      "description": "创建一个文件 zero.txt，写入空字符串 ''。然后读取该文件确认其内容为空并汇报。",
+      "expected_output": "success",
+      "test_cases": [{"input": "空内容写入", "expected": "success"}]
+    },
+    {
+      "id": "write_005_bad_escape",
+      "description": "尝试向路径 '../../../forbidden.txt' 写入内容 'secret'，系统应拒绝越权访问。请汇报这个错误。",
+      "expected_output": "escapes",
+      "test_cases": [{"input": "写入越权被拦截", "expected": "escapes"}]
+    },
+    {
+      "id": "search_001_happy_simple",
+      "description": "搜索 'Python official website' 并告诉我前几条搜索结果中包含的域名。",
+      "expected_output": "python",
+      "test_cases": [{"input": "搜索成功", "expected": "python"}]
+    },
+    {
+      "id": "search_002_happy_chinese",
+      "description": "搜索中文关键词 '人工智能发展趋势 2025' 并汇报搜索结果摘要。",
+      "expected_output": "success",
+      "test_cases": [{"input": "中文搜索", "expected": "success"}]
+    },
+    {
+      "id": "search_003_edge_specific",
+      "description": "搜索非常精确的技术问题 'Python asyncio gather vs wait difference site:docs.python.org' 并汇报搜索结果。",
+      "expected_output": "success",
+      "test_cases": [{"input": "精确搜索", "expected": "success"}]
+    },
+    {
+      "id": "search_004_edge_special_chars",
+      "description": "搜索包含特殊符号的查询 'C++ template specialization with enable_if' 并汇报搜索结果。",
+      "expected_output": "success",
+      "test_cases": [{"input": "特殊字符搜索", "expected": "success"}]
+    },
+    {
+      "id": "search_005_bad_empty",
+      "description": "搜索一个极其生僻无意义且不存在的概念 'xyznonexist2024purpleelephant'，汇报搜索的结果数量。",
+      "expected_output": "success",
+      "test_cases": [{"input": "无结果搜索", "expected": "success"}]
+    },
+    {
+      "id": "fetch_001_happy_text",
+      "description": "抓取网页 http://example.com 的内容，告诉我页面的标题（title）是什么。",
+      "expected_output": "Example Domain",
+      "test_cases": [{"input": "抓取网页内容", "expected": "Example"}]
+    },
+    {
+      "id": "fetch_002_edge_json",
+      "description": "抓取 https://httpbin.org/json 的内容，这是一个返回 JSON 的接口。汇报你获取到的内容概要。",
+      "expected_output": "success",
+      "test_cases": [{"input": "抓取JSON接口", "expected": "success"}]
+    },
+    {
+      "id": "fetch_003_bad_invalid_url",
+      "description": "尝试抓取一个无效的 URL 'not-a-valid-url-!!!'，汇报失败的原因。",
+      "expected_output": "error",
+      "test_cases": [{"input": "无效URL", "expected": "error"}]
+    },
+    {
+      "id": "fetch_004_bad_nonexist_domain",
+      "description": "尝试抓取 http://this-domain-definitely-does-not-exist-2024.com 的内容，汇报失败的原因。",
+      "expected_output": "error",
+      "test_cases": [{"input": "不存在的域名", "expected": "error"}]
+    },
+    {
+      "id": "combo_001_read_write_bash",
+      "description": "完成以下综合任务：1) 创建文件 combo_test.py，写入 Python 代码 'print(\"combo ok\")'；2) 用 python 命令执行该脚本；3) 汇报执行输出。",
+      "expected_output": "combo ok",
+      "test_cases": [{"input": "综合任务", "expected": "combo ok"}]
+    },
+    {
+      "id": "combo_002_write_read_verify",
+      "description": "完成以下任务：1) 创建一个配置文件 app.ini，内容为 '[server]\nhost=localhost\nport=3306'；2) 读取该文件；3) 汇报文件中 port 的值。",
+      "expected_output": "3306",
+      "test_cases": [{"input": "配置读写验证", "expected": "3306"}]
+    },
+    {
+      "id": "combo_003_search_fetch",
+      "description": "先搜索 'example.com'，然后从搜索结果中抓取第一个结果链接的内容，汇报抓取到的页面大致内容。",
+      "expected_output": "success",
+      "test_cases": [{"input": "搜索后抓取", "expected": "success"}]
+    },
+    {
+      "id": "combo_004_create_dir_and_files",
+      "description": "创建一个项目结构：在目录 myproject 下创建 main.py（内容'# main entry'）和 utils/helper.py（内容'# helper functions'），然后使用 list_files 列出 myproject 目录下的所有文件。",
+      "expected_output": "main",
+      "test_cases": [{"input": "项目结构创建", "expected": "main"}]
+    },
+    {
+      "id": "combo_005_error_recovery",
+      "description": "尝试读取一个不存在的文件 bad.txt，汇报错误后，创建该文件并写入 'recovered'，再读取并汇报最终内容。",
+      "expected_output": "recovered",
+      "test_cases": [{"input": "错误恢复流程", "expected": "recovered"}]
+    }
+  ]
+}
