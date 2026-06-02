@@ -57,6 +57,12 @@ const router = createRouter({
               name: 'eval-charts',
               component: () => import('../views/evaluation/EvalChartsView.vue'),
               meta: { title: '图表可视化' }
+            },
+            {
+              path: 'results/:taskId',
+              name: 'eval-results',
+              component: () => import('../views/evaluation/EvalResultDetail.vue'),
+              meta: { title: '结果明细' }
             }
           ]
         }

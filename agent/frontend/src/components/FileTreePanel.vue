@@ -5,12 +5,16 @@
       <button class="btn-icon" @click="store.fetchFileTree()" title="Refresh">↻</button>
     </div>
     <div class="filetree-body">
-      <div v-if="!store.selectedProjectId" class="empty-hint">
-        Select a project to view files.
-      </div>
-      <div v-else-if="store.fileTree.length === 0" class="empty-hint">
-        No files in workspace.
-      </div>
+      <EmptyState
+        v-if="!store.selectedProjectId"
+        icon="📁"
+        title="Select a project to view files"
+      />
+      <EmptyState
+        v-else-if="store.fileTree.length === 0"
+        icon="📂"
+        title="No files in workspace"
+      />
       <FileTreeNode
         v-for="node in store.fileTree"
         :key="node.path"
@@ -25,6 +29,7 @@
 <script setup>
 import { useAgentStore } from '../stores/agent.js'
 import FileTreeNode from './FileTreeNode.vue'
+import { EmptyState } from './status/index.js'
 
 const store = useAgentStore()
 const emit = defineEmits(['select-file'])
@@ -52,7 +57,7 @@ function handleSelectFile(node) {
 }
 
 .panel-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -86,6 +91,6 @@ function handleSelectFile(node) {
   padding: 14px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 </style>

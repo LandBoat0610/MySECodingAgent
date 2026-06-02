@@ -61,13 +61,33 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
   background: var(--bg-primary);
 }
 
 #app {
   height: 100%;
+}
+
+/* ---- 全局滚动条（统一暗色风格）---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-bg);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #6c7086;
 }
 
 .app-container {
@@ -144,5 +164,19 @@ input, textarea {
 
 input:focus, textarea:focus {
   border-color: var(--accent);
+}
+
+/* ---- 响应式：小屏幕 (< 900px) 隐藏侧边栏 ---- */
+@media (max-width: 900px) {
+  .left-sidebar {
+    display: none;
+  }
+  .right-panel {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .center-preview {
+    display: none;
+  }
 }
 </style>

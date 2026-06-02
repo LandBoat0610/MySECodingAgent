@@ -24,7 +24,8 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed } from 'vue'
+import { useExpandedDirs } from '../composables/useExpandedDirs.js'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -32,10 +33,12 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['select'])
-const expanded = ref(false)
+const { isExpanded, toggle: togglePersisted } = useExpandedDirs()
+
+const expanded = computed(() => props.node.type === 'directory' && isExpanded(props.node.path))
 
 function toggle() {
-  expanded.value = !expanded.value
+  togglePersisted(props.node.path)
 }
 
 function handleClick() {
@@ -54,7 +57,7 @@ function handleClick() {
   gap: 4px;
   padding: 5px 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   transition: background 0.15s;
   white-space: nowrap;
   overflow: hidden;
@@ -77,7 +80,7 @@ function handleClick() {
 }
 
 .node-icon {
-  font-size: 13px;
+  font-size: 14px;
   flex-shrink: 0;
 }
 

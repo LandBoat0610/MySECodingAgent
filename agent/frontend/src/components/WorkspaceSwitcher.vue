@@ -59,7 +59,7 @@ function goEval() {
 
 .seg {
   padding: 10px 18px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
   background: var(--bg-secondary);
