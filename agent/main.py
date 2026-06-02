@@ -1,9 +1,12 @@
 # main.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from agent.backend.utils import sync_workspace_file_back
 from agent.backend.graph import build_graph, run_manual_fallback
 from agent.backend.llm import fallback_session_title, generate_session_title
 import threading
-import os
 import uuid
 import json
 import asyncio
@@ -11,7 +14,6 @@ from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from dotenv import load_dotenv
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -54,15 +56,12 @@ from agent.backend.platform_settings import (
 )
 from agent.backend.eval_router import router as eval_router
 
-load_dotenv()
-
 
 @asynccontextmanager
 async def lifespan(app):
     init_db()
     yield
 
-load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 app.include_router(eval_router)
 
