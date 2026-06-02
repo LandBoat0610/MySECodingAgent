@@ -28,15 +28,18 @@
 
     <!-- 计划确认弹窗 -->
     <PlanDialog v-if="showPlanDialog" />
+    <CommandApprovalDialog v-if="showCommandApprovalDialog" />
+    <ContinueApprovalDialog v-if="showContinueApprovalDialog" />
 
     <!-- 消息与轨迹区域 -->
-    <div class="chat-messages" ref="messagesContainer">
+    <div class="chat-messages" ref="messagesContainer" @scroll="handleMessagesScroll">
+      <div v-if="store.roundsLoadingOlder" class="history-loader">加载更早的对话…</div>
 
       <!-- 空状态 -->
       <div v-if="isEmpty" class="chat-empty">
         <div class="empty-icon">🤖</div>
         <div class="empty-title">Agent Platform</div>
-        <div class="empty-desc">选择项目和会话，发送消息开始与 Agent 协作。</div>
+        <div class="empty-desc">选择项目后直接发送消息，系统会自动创建对话。</div>
       </div>
 
       <!-- ══ 多轮模式：每轮独立展示 ══ -->
@@ -49,7 +52,6 @@
             <div class="message-body">
               <div class="message-label">
                 用户
-                <span v-if="allRounds.length > 1" class="round-badge">第 {{ rIdx + 1 }} 轮</span>
               </div>
               <div class="message-text md-content" v-html="renderMd(round.userMessage)"></div>
             </div>
@@ -117,6 +119,15 @@
                 <div v-if="isRoundItemExpanded(rIdx, iIdx)" class="card-body">
                   <div class="args-label">参数：</div>
                   <pre class="code-block">{{ parseActArgs(item.content) }}</pre>
+                  <template v-if="item.attachedObserve">
+                    <div class="args-label command-result-label">执行结果：</div>
+                    <div
+                      class="observe-output command-attached-result"
+                      :class="{ 'result-error': observeIsError(item.attachedObserve.content) }"
+                    >
+                      {{ parseObserveOutput(item.attachedObserve.content) }}
+                    </div>
+                  </template>
                 </div>
               </div>
 
@@ -202,24 +213,6 @@
             </div>
           </div>
 
-          <!-- 当前轮 / 历史轮结果卡片 -->
-          <div v-if="round.finalAnswer" class="final-answer-card">
-            <div class="final-header">
-              <span class="final-title">🎯 任务结果</span>
-              <div v-if="parseFinalAnswer(round.finalAnswer).stats" class="final-stats">
-                <span v-if="parseFinalAnswer(round.finalAnswer).stats.tools" class="stat-chip">🔧 {{ parseFinalAnswer(round.finalAnswer).stats.tools }}</span>
-                <span v-if="parseFinalAnswer(round.finalAnswer).stats.reflections > 0" class="stat-chip">🔄 修正 {{ parseFinalAnswer(round.finalAnswer).stats.reflections }} 次</span>
-                <span
-                  v-if="parseFinalAnswer(round.finalAnswer).stats.status"
-                  :class="['stat-chip', parseFinalAnswer(round.finalAnswer).stats.status === 'completed' ? 'chip-ok' : 'chip-warn']"
-                >
-                  {{ parseFinalAnswer(round.finalAnswer).stats.status === 'completed' ? '成功' : parseFinalAnswer(round.finalAnswer).stats.status }}
-                </span>
-              </div>
-            </div>
-            <div class="final-content md-content" v-html="renderMd(parseFinalAnswer(round.finalAnswer).stepResults || round.finalAnswer)"></div>
-          </div>
-
           <!-- 轮次分隔线（历史轮之间） -->
           <div v-if="!round.isCurrent && rIdx < allRounds.length - 1" class="round-separator"></div>
 
@@ -288,6 +281,15 @@
               <div v-if="legacyExpanded[iIdx]" class="card-body">
                 <div class="args-label">参数：</div>
                 <pre class="code-block">{{ parseActArgs(item.content) }}</pre>
+                <template v-if="item.attachedObserve">
+                  <div class="args-label command-result-label">执行结果：</div>
+                  <div
+                    class="observe-output command-attached-result"
+                    :class="{ 'result-error': observeIsError(item.attachedObserve.content) }"
+                  >
+                    {{ parseObserveOutput(item.attachedObserve.content) }}
+                  </div>
+                </template>
               </div>
             </div>
             <div v-else-if="item.phase === 'observe'" class="timeline-card card-observe" :class="{ 'card-error': observeIsError(item.content) }">
@@ -350,12 +352,6 @@
           </div>
         </div>
 
-        <div v-if="store.finalAnswer" class="final-answer-card">
-          <div class="final-header">
-            <span class="final-title">🎯 任务结果</span>
-          </div>
-          <div class="final-content md-content" v-html="renderMd(parseFinalAnswer(store.finalAnswer).stepResults || store.finalAnswer)"></div>
-        </div>
       </template>
 
     </div>
@@ -368,12 +364,12 @@
         placeholder="描述你的任务，按 Enter 发送…"
         rows="2"
         @keydown.enter.exact.prevent="handleSend"
-        :disabled="!store.selectedSessionId || store.agentRunning"
+        :disabled="!store.selectedProjectId || store.agentRunning"
       ></textarea>
       <button
         class="btn btn-primary send-btn"
         @click="handleSend"
-        :disabled="!store.selectedSessionId || !inputMessage.trim() || store.agentRunning"
+        :disabled="!store.selectedProjectId || !inputMessage.trim() || store.agentRunning"
       >
         发送
       </button>
@@ -386,6 +382,8 @@ import { ref, computed, watch, nextTick, onMounted, reactive } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
 import { useAgentConfigStore } from '../stores/agentConfig.js'
 import PlanDialog from './PlanDialog.vue'
+import CommandApprovalDialog from './CommandApprovalDialog.vue'
+import ContinueApprovalDialog from './ContinueApprovalDialog.vue'
 import { marked } from 'marked'
 
 marked.setOptions({ gfm: true, breaks: true })
@@ -402,6 +400,7 @@ onMounted(() => { if (!cfg.model) cfg.load() })
 
 const inputMessage = ref('')
 const messagesContainer = ref(null)
+const preservingHistoryScroll = ref(false)
 
 // ── 内部阶段黑名单 ────────────────────────────────────────
 const HIDDEN_PHASES = new Set([
@@ -425,11 +424,43 @@ function filterTrace(logs) {
   })
 }
 
+function getActToolName(item) {
+  if (item?.meta?.tool) return item.meta.tool
+  const m = String(item?.content || '').match(/^(\w+)\(/)
+  return m ? m[1] : ''
+}
+
+function attachCommandResults(logs) {
+  const items = filterTrace(logs)
+  const attachedObserveIndexes = new Set()
+
+  return items
+    .map((item, idx) => {
+      if (item.phase !== 'act' || getActToolName(item) !== 'execute_bash') return item
+      for (let j = idx + 1; j < items.length; j += 1) {
+        const next = items[j]
+        if (next.phase === 'observe') {
+          attachedObserveIndexes.add(j)
+          return { ...item, attachedObserve: next }
+        }
+        if (next.phase === 'act' || next.phase === 'reason' || next.phase === 'finish_step') break
+      }
+      return item
+    })
+    .filter((_, idx) => !attachedObserveIndexes.has(idx))
+}
+
+const VISIBLE_PLAN_STATUSES = new Set(['pending', 'approved', 'completed'])
+
+function isVisiblePlan(plan) {
+  return VISIBLE_PLAN_STATUSES.has(plan.status)
+}
+
 // 计划步骤：只过滤，不重排序——后端已保证 rowid ASC 插入顺序
 // 二次排序会因 created_at 相同时用随机 UUID 比较而乱序
 function sortedTaskList(plans) {
   return plans
-    .filter(p => p.status !== 'skipped' && p.status !== 'stopped')
+    .filter(isVisiblePlan)
     .map(p => p.content)
 }
 
@@ -442,7 +473,7 @@ const taskList = computed(() => {
 })
 
 // ── 当前轮 displayTrace ───────────────────────────────────
-const displayTrace = computed(() => filterTrace(store.traceLogs))
+const displayTrace = computed(() => attachCommandResults(store.traceLogs))
 
 // ── 轮次模式 vs 兼容模式 ─────────────────────────────────
 const isRoundMode = computed(() =>
@@ -454,7 +485,7 @@ const allRounds = computed(() => {
   const rounds = store.completedRounds.map(r => ({
     userMessage: r.userMessage,
     taskListItems: sortedTaskList(r.plans),
-    displayTrace: filterTrace(r.traceLogs),
+    displayTrace: attachCommandResults(r.traceLogs),
     finalAnswer: r.finalAnswer,
     isCurrent: false,
   }))
@@ -482,12 +513,12 @@ const filteredMessages = computed(() =>
 )
 
 const legacyTaskList = computed(() => {
-  const active = store.plans.filter(p => p.status !== 'skipped' && p.status !== 'stopped')
+  const active = store.plans.filter(isVisiblePlan)
   const items = sortedTaskList(active)
   return items.length > 0 ? items : (store.stateSnapshot?.task_list || [])
 })
 
-const legacyTrace = computed(() => filterTrace(store.traceLogs))
+const legacyTrace = computed(() => attachCommandResults(store.traceLogs))
 
 const isLegacyMode = computed(() =>
   !isRoundMode.value && (
@@ -505,6 +536,8 @@ const isEmpty = computed(() =>
 // ── 状态标签 ─────────────────────────────────────────────
 const STATUS_LABELS = {
   idle: '就绪', running: '运行中', awaiting_approval: '等待确认',
+  awaiting_tool_approval: '等待命令确认',
+  awaiting_continue_approval: '等待继续确认',
   approved: '已批准', completed: '已完成', stopped: '已停止',
   needs_fix: '修复中', next_step: '下一步', skipped: '已跳过',
 }
@@ -513,6 +546,12 @@ const statusLabel = computed(() => STATUS_LABELS[store.sessionStatus] || store.s
 // ── 计划弹窗 ─────────────────────────────────────────────
 const showPlanDialog = computed(() =>
   store.sessionStatus === 'awaiting_approval' && store.pendingPlans.length > 0
+)
+const showCommandApprovalDialog = computed(() =>
+  !!store.pendingCommandApproval
+)
+const showContinueApprovalDialog = computed(() =>
+  store.sessionStatus === 'awaiting_continue_approval' && !!store.pendingLoopApproval
 )
 
 // ── 运行时指标摘要 ───────────────────────────────────────
@@ -568,6 +607,21 @@ const legacyPlanExpanded = ref(true)
 const legacyExpanded = reactive({})
 function toggleLegacyPlan() { legacyPlanExpanded.value = !legacyPlanExpanded.value }
 function toggleLegacyItem(idx) { legacyExpanded[idx] = !legacyExpanded[idx] }
+
+async function handleMessagesScroll() {
+  const el = messagesContainer.value
+  if (!el || el.scrollTop > 80 || !store.roundsHasMore || store.roundsLoadingOlder) return
+  const previousHeight = el.scrollHeight
+  preservingHistoryScroll.value = true
+  const loaded = await store.loadOlderRounds()
+  try {
+    if (!loaded) return
+    await nextTick()
+    el.scrollTop = el.scrollHeight - previousHeight + el.scrollTop
+  } finally {
+    preservingHistoryScroll.value = false
+  }
+}
 
 function getLegacyStepStatus(idx) {
   const currentIdx = store.stateSnapshot?.current_task_index ?? 0
@@ -663,7 +717,7 @@ function parseFinalAnswer(raw) {
 
 // ── 事件处理 ─────────────────────────────────────────────
 async function handleSend() {
-  if (!inputMessage.value.trim() || !store.selectedSessionId || store.agentRunning) return
+  if (!inputMessage.value.trim() || !store.selectedProjectId || store.agentRunning) return
   const msg = inputMessage.value.trim()
   inputMessage.value = ''
   try {
@@ -686,7 +740,10 @@ function scrollToBottom() {
 }
 
 watch(() => store.traceLogs.length, async () => { await nextTick(); scrollToBottom() })
-watch(() => store.completedRounds.length, async () => { await nextTick(); scrollToBottom() })
+watch(() => store.completedRounds.length, async () => {
+  await nextTick()
+  if (!preservingHistoryScroll.value) scrollToBottom()
+})
 watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() })
 </script>
 
@@ -819,16 +876,6 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   color: var(--text-muted);
   margin-bottom: 4px;
 }
-.round-badge {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--bg-surface);
-  color: var(--accent);
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-}
 .message-text {
   font-size: 13px;
   line-height: 1.55;
@@ -862,6 +909,13 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   color: var(--success);
   font-size: 10px;
   text-transform: none;
+}
+
+.history-loader {
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 8px;
 }
 
 /* ── 轮次分隔线 ─────────────────────────────────────────── */
@@ -1020,6 +1074,16 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   overflow-y: auto;
 }
 .args-label { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; }
+.command-result-label {
+  margin-top: 10px;
+}
+.command-attached-result {
+  padding-top: 8px;
+  border-top: 1px solid rgba(249,226,175,0.16);
+}
+.command-attached-result.result-error {
+  color: var(--danger);
+}
 .observe-output {
   font-size: 11px;
   line-height: 1.5;
@@ -1059,47 +1123,6 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   30%           { transform: translateY(-5px); opacity: 1; }
 }
 
-/* ── 最终结果卡片 ────────────────────────────────────────── */
-.final-answer-card {
-  border: 1px solid rgba(166,227,161,0.3);
-  border-radius: 10px;
-  background: rgba(166,227,161,0.05);
-  overflow: hidden;
-}
-.final-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: rgba(166,227,161,0.08);
-  border-bottom: 1px solid rgba(166,227,161,0.2);
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.final-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--success);
-}
-.final-stats { display: flex; gap: 6px; flex-wrap: wrap; }
-.stat-chip {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-}
-.chip-ok   { background: rgba(166,227,161,0.15); color: var(--success); }
-.chip-warn { background: rgba(249,226,175,0.15); color: var(--warning); }
-.final-content {
-  padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-primary, var(--text-secondary));
-}
-
 /* ── 输入区 ─────────────────────────────────────────────── */
 .chat-input-area {
   padding: 10px 14px;
@@ -1121,18 +1144,21 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
 .send-btn { flex-shrink: 0; height: 40px; }
 
 /* ── Markdown 渲染 ──────────────────────────────────────── */
-.md-content :deep(p)          { margin: 0 0 8px; line-height: 1.65; }
+.md-content {
+  white-space: normal;
+}
+.md-content :deep(p)          { margin: 0 0 4px; line-height: 1.45; }
 .md-content :deep(p:last-child) { margin-bottom: 0; }
 .md-content :deep(h1),
 .md-content :deep(h2),
 .md-content :deep(h3),
-.md-content :deep(h4)         { margin: 12px 0 6px; font-weight: 700; line-height: 1.3; color: var(--text-secondary); }
+.md-content :deep(h4)         { margin: 8px 0 4px; font-weight: 700; line-height: 1.25; color: var(--text-secondary); }
 .md-content :deep(h1)         { font-size: 1.2em; }
 .md-content :deep(h2)         { font-size: 1.1em; }
 .md-content :deep(h3)         { font-size: 1em; }
 .md-content :deep(ul),
-.md-content :deep(ol)         { margin: 6px 0 8px; padding-left: 1.4em; }
-.md-content :deep(li)         { margin: 3px 0; line-height: 1.55; }
+.md-content :deep(ol)         { margin: 3px 0 5px; padding-left: 1.25em; }
+.md-content :deep(li)         { margin: 1px 0; line-height: 1.4; }
 .md-content :deep(strong)     { font-weight: 700; color: var(--text-secondary); }
 .md-content :deep(em)         { font-style: italic; color: var(--text-muted); }
 .md-content :deep(code) {
@@ -1144,8 +1170,8 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   color: var(--accent);
 }
 .md-content :deep(pre) {
-  margin: 8px 0;
-  padding: 10px 12px;
+  margin: 5px 0;
+  padding: 8px 10px;
   border-radius: 6px;
   background: var(--bg-surface);
   overflow-x: auto;
@@ -1156,11 +1182,11 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   background: none;
   color: var(--text-secondary);
   font-size: 0.87em;
-  line-height: 1.55;
+  line-height: 1.4;
 }
 .md-content :deep(blockquote) {
-  margin: 8px 0;
-  padding: 6px 12px;
+  margin: 5px 0;
+  padding: 5px 10px;
   border-left: 3px solid var(--accent);
   background: rgba(137,180,250,0.05);
   color: var(--text-muted);
@@ -1169,7 +1195,7 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
 .md-content :deep(hr) {
   border: none;
   border-top: 1px solid var(--border-color);
-  margin: 10px 0;
+  margin: 7px 0;
 }
 .md-content :deep(a) {
   color: var(--accent);
@@ -1179,12 +1205,12 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
 .md-content :deep(table) {
   width: 100%;
   border-collapse: collapse;
-  margin: 8px 0;
+  margin: 5px 0;
   font-size: 0.9em;
 }
 .md-content :deep(th),
 .md-content :deep(td) {
-  padding: 5px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border-color);
   text-align: left;
 }

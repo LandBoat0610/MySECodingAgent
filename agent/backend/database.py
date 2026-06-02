@@ -24,6 +24,26 @@ def _migrate_eval_results_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE eval_task_results ADD COLUMN {col} {ddl}")
 
 
+def _migrate_sessions_columns(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.execute("PRAGMA table_info(sessions)")
+        names = {row[1] for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if "pinned" not in names:
+        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_plans_columns(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.execute("PRAGMA table_info(plans)")
+        names = {row[1] for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if "round_id" not in names:
+        conn.execute("ALTER TABLE plans ADD COLUMN round_id TEXT DEFAULT ''")
+
+
 def init_db():
     with get_connection() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -42,12 +62,14 @@ def init_db():
                 created_at TEXT NOT NULL,
                 state_snapshot TEXT DEFAULT '{}',
                 status TEXT DEFAULT 'idle',
+                pinned INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(project_id) REFERENCES projects(id)
             );
             CREATE TABLE IF NOT EXISTS plans (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 project_id TEXT NOT NULL,
+                round_id TEXT DEFAULT '',
                 content TEXT DEFAULT '',
                 status TEXT DEFAULT 'pending',
                 created_at TEXT NOT NULL,
@@ -63,6 +85,19 @@ def init_db():
             CREATE TABLE IF NOT EXISTS platform_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversation_rounds (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                user_message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                created_at TEXT NOT NULL,
+                finished_at TEXT,
+                final_answer TEXT DEFAULT '',
+                trace_json TEXT DEFAULT '[]',
+                runtime_metrics_json TEXT DEFAULT '{}',
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
             CREATE TABLE IF NOT EXISTS eval_datasets (
                 id TEXT PRIMARY KEY,
@@ -111,6 +146,8 @@ def init_db():
                 UNIQUE(task_id, item_index)
             );
         """)
+        _migrate_sessions_columns(conn)
+        _migrate_plans_columns(conn)
         _migrate_eval_results_columns(conn)
     ensure_eval_storage_dirs()
     print("Database initialized.")

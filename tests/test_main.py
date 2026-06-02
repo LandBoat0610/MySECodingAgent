@@ -217,7 +217,10 @@ class TestChat:
             assert data["session_id"] == "s1"
             assert data["status"] == "running"
             # 验证数据库状态更新被调用，且 messages 添加了用户消息
-            update_call = mock_conn.execute.call_args_list[1]  # 第一个是 select，第二个是 update
+            update_call = next(
+                call for call in mock_conn.execute.call_args_list
+                if "UPDATE sessions" in call[0][0]
+            )
             assert "UPDATE sessions" in update_call[0][0]
             new_state = json.loads(update_call[0][1][0])
             assert new_state["task"] == "Do something"

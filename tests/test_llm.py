@@ -74,6 +74,15 @@ class TestCreatePlan:
         steps = create_plan("task", "memory", [], {})
         assert steps == ["Step 1", "Step 2"]
 
+    def test_plan_clamps_to_max_steps(self, monkeypatch):
+        def mock_llm_json(system, user, state=None):
+            return {"difficulty": "hard", "steps": [f"Step {i}" for i in range(1, 22)]}
+        monkeypatch.setattr("agent.backend.llm.llm_json", mock_llm_json)
+        state = {}
+        steps = create_plan("task", "", [], state)
+        assert steps == [f"Step {i}" for i in range(1, 21)]
+        assert state["task_difficulty"] == "hard"
+
     def test_empty_steps_fallback(self, monkeypatch):
         def mock_llm_json(system, user, state=None):
             return {"steps": []}

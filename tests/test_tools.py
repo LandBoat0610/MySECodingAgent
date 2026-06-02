@@ -137,7 +137,9 @@ class TestReadFile:
         data = json.loads(result_json)
         assert data["status"] == "error"
         # 错误信息应包含文件未找到
-        assert "no such file" in data["output"].lower() or "不存在" in data["output"]
+        assert ("no such file" in data["output"].lower()
+                or "不存在" in data["output"]
+                or "not found" in data["output"].lower())
 
     def test_read_outside_workspace_blocked(self, sandbox_workspace):
         # 尝试用相对路径越权（../../etc）

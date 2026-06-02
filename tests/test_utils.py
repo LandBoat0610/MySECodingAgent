@@ -104,7 +104,7 @@ class TestUtils:
             os.makedirs(os.path.dirname(file_in_ws), exist_ok=True)
             Path(file_in_ws).touch()
             resolved = resolve_workspace_path(tmpdir, "sub/file.txt")
-            assert resolved == file_in_ws
+            assert resolved == str(Path(file_in_ws).resolve())
 
     def test_resolve_absolute_path_inside_workspace(self):
         """绝对路径在工作区内部应正常返回"""
@@ -112,7 +112,7 @@ class TestUtils:
             file_abs = os.path.join(tmpdir, "test.py")
             Path(file_abs).touch()
             resolved = resolve_workspace_path(tmpdir, file_abs)
-            assert resolved == file_abs
+            assert resolved == str(Path(file_abs).resolve())
 
     def test_resolve_escape_path_raises(self):
         """尝试越权访问工作区外的文件应抛出 PermissionError"""

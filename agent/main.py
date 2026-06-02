@@ -1,8 +1,13 @@
+# flake8: noqa: E402
 # main.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from agent.backend.utils import sync_workspace_file_back
 from agent.backend.graph import build_graph, run_manual_fallback
+from agent.backend.llm import fallback_session_title, generate_session_title
 import threading
-import os
 import uuid
 import json
 import asyncio
@@ -10,28 +15,47 @@ from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from dotenv import load_dotenv
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
     ProjectResponse,
     SessionCreateRequest,
     SessionResponse,
+    SessionUpdateRequest,
+    SessionActionResponse,
     StateResponse,
     ChatRequest,
     ChatResponse,
+    ConversationRoundResponse,
     PlanResponse,
     PlanActionRequest,
     PlanActionResponse,
+    CommandApprovalRequest,
+    CommandApprovalResponse,
+    LoopApprovalRequest,
+    LoopApprovalResponse,
     FileTreeResponse,
     FileContentResponse,
     AgentConfigResponse,
     AgentConfigUpdateRequest,
+    ToolSettingsResponse,
+    ToolSettingsUpdateRequest,
+    SkillCreateRequest,
+    SkillUpdateRequest,
+    SkillItem,
+    SkillListResponse,
 )
-from agent.backend.platform_settings import get_agent_config, set_agent_config
+from agent.backend.platform_settings import (
+    get_agent_config,
+    set_agent_config,
+    get_tool_settings,
+    set_tool_settings,
+    get_skills,
+    create_skill,
+    update_skill,
+    delete_skill,
+)
 from agent.backend.eval_router import router as eval_router
-
-load_dotenv()
 
 
 @asynccontextmanager
@@ -39,7 +63,6 @@ async def lifespan(app):
     init_db()
     yield
 
-load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 app.include_router(eval_router)
 
@@ -70,6 +93,50 @@ def update_agent_config(req: AgentConfigUpdateRequest):
         return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
     cfg = set_agent_config(payload)
     return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+
+
+@app.get("/settings/tools", response_model=ToolSettingsResponse)
+def read_tool_settings():
+    settings = get_tool_settings()
+    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+
+
+@app.put("/settings/tools", response_model=ToolSettingsResponse)
+def update_tool_settings(req: ToolSettingsUpdateRequest):
+    settings = set_tool_settings(req.tools)
+    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+
+
+@app.get("/settings/skills", response_model=SkillListResponse)
+def read_skills():
+    return SkillListResponse(skills=[SkillItem(**skill) for skill in get_skills()])
+
+
+@app.post("/settings/skills", response_model=SkillItem, status_code=201)
+def create_skill_endpoint(req: SkillCreateRequest):
+    try:
+        return SkillItem(**create_skill(req.model_dump()))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.patch("/settings/skills/{skill_id}", response_model=SkillItem)
+def update_skill_endpoint(skill_id: str, req: SkillUpdateRequest):
+    try:
+        return SkillItem(**update_skill(skill_id, req.model_dump(exclude_unset=True)))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Skill not found") from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.delete("/settings/skills/{skill_id}")
+def delete_skill_endpoint(skill_id: str):
+    try:
+        delete_skill(skill_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Skill not found") from None
+    return {"status": "deleted", "skill_id": skill_id}
 
 
 WORKSPACES_ROOT = os.path.abspath("workspaces")
@@ -133,6 +200,7 @@ def delete_project(project_id: str):
                 (sid,),
             )
             conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+            conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
 
         conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -155,11 +223,16 @@ def list_sessions(project_id: str):
         if not proj:
             raise HTTPException(status_code=404, detail="项目不存在")
         rows = conn.execute(
-            "SELECT id, project_id, title, created_at, status "
-            "FROM sessions WHERE project_id = ? ORDER BY created_at DESC",
+            "SELECT id, project_id, title, created_at, status, pinned "
+            "FROM sessions WHERE project_id = ? ORDER BY pinned DESC, created_at DESC",
             (project_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    sessions = []
+    for row in rows:
+        data = dict(row)
+        data["pinned"] = bool(data.get("pinned", False))
+        sessions.append(data)
+    return sessions
 
 # ------------------ 4. 新建会话 ------------------
 
@@ -168,6 +241,14 @@ def list_sessions(project_id: str):
 def create_session(project_id: str, req: SessionCreateRequest):
     now = datetime.now().isoformat()
     session_id = uuid.uuid4().hex[:8]
+    requested_title = (req.title or "").strip()
+    should_generate_title = bool(req.initial_message and not requested_title)
+    if requested_title:
+        title = requested_title
+    elif req.initial_message:
+        title = fallback_session_title(req.initial_message)
+    else:
+        title = "New Session"
 
     with get_connection() as conn:
         proj = conn.execute("SELECT id, workspace_path FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -204,22 +285,154 @@ def create_session(project_id: str, req: SessionCreateRequest):
                 "llm_calls": 0,
                 "tool_calls": [],
             },
+            "current_round_id": "",
+            "pending_tool_approval": None,
+            "pending_loop_approval": None,
         }
 
         conn.execute(
             "INSERT INTO sessions "
             "(id, project_id, title, created_at, state_snapshot, status) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, project_id, req.title, now, json.dumps(initial_state, ensure_ascii=False), "idle"),
+            (session_id, project_id, title, now, json.dumps(initial_state, ensure_ascii=False), "idle"),
         )
+
+    if should_generate_title:
+        threading.Thread(
+            target=_generate_and_save_session_title,
+            args=(project_id, session_id, req.initial_message),
+            daemon=True,
+        ).start()
 
     return SessionResponse(
         id=session_id,
         project_id=project_id,
-        title=req.title,
+        title=title,
         created_at=now,
         status="idle",
+        pinned=False,
     )
+
+
+@app.patch("/projects/{project_id}/sessions/{sid}", response_model=SessionResponse)
+def update_session(project_id: str, sid: str, req: SessionUpdateRequest):
+    fields = []
+    values = []
+    if req.title is not None:
+        title = req.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="会话标题不能为空")
+        fields.append("title = ?")
+        values.append(title)
+    if req.pinned is not None:
+        fields.append("pinned = ?")
+        values.append(1 if req.pinned else 0)
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可更新的字段")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        conn.execute(
+            f"UPDATE sessions SET {', '.join(fields)} WHERE id = ? AND project_id = ?",
+            (*values, sid, project_id),
+        )
+        updated = conn.execute(
+            "SELECT id, project_id, title, created_at, status, pinned FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+
+    data = dict(updated)
+    data["pinned"] = bool(data["pinned"])
+    return SessionResponse(**data)
+
+
+@app.delete("/projects/{project_id}/sessions/{sid}", response_model=SessionActionResponse)
+def delete_session(project_id: str, sid: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+        conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM sessions WHERE id = ? AND project_id = ?", (sid, project_id))
+
+    cleanup_cancel_event(sid)
+    runner = _agent_runners.pop(sid, None)
+    if runner and runner.is_alive():
+        runner.cancel_event.set()
+    return SessionActionResponse(status="deleted", session_id=sid)
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/clear", response_model=SessionActionResponse)
+def clear_session(project_id: str, sid: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        state = json.loads(row["state_snapshot"])
+        state.update({
+            "task": "",
+            "messages": [],
+            "status": "idle",
+            "errors": [],
+            "used_tools": [],
+            "result_history": [],
+            "modified_files": [],
+            "task_list": [],
+            "current_task_index": 0,
+            "current_task": "",
+            "last_tool_result": {},
+            "last_execution": {},
+            "final_answer": "",
+            "trace": [],
+            "runtime_metrics": {
+                "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                "llm_calls": 0,
+                "tool_calls": [],
+            },
+            "current_round_id": "",
+            "pending_tool_approval": None,
+            "pending_loop_approval": None,
+        })
+        conn.execute("DELETE FROM plan_actions WHERE plan_id IN (SELECT id FROM plans WHERE session_id = ?)", (sid,))
+        conn.execute("DELETE FROM plans WHERE session_id = ?", (sid,))
+        conn.execute("DELETE FROM conversation_rounds WHERE session_id = ?", (sid,))
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = 'idle' WHERE id = ? AND project_id = ?",
+            (json.dumps(state, ensure_ascii=False), sid, project_id),
+        )
+
+    cleanup_cancel_event(sid)
+    runner = _agent_runners.pop(sid, None)
+    if runner and runner.is_alive():
+        runner.cancel_event.set()
+    return SessionActionResponse(status="cleared", session_id=sid)
+
+
+def _generate_and_save_session_title(project_id: str, session_id: str, message: str) -> None:
+    title = generate_session_title(message)
+    if not title:
+        return
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? AND project_id = ?",
+                (title, session_id, project_id),
+            )
+    except Exception as e:
+        print(f"Warning: failed to generate session title for {session_id}: {e}")
 
 # ------------------ 5. 获取会话状态快照 ------------------
 
@@ -246,6 +459,8 @@ def get_session_state(project_id: str, sid: str):
 
 @app.post("/projects/{project_id}/sessions/{sid}/chat", response_model=ChatResponse)
 def chat(project_id: str, sid: str, req: ChatRequest):
+    now = datetime.now().isoformat()
+    round_id = uuid.uuid4().hex[:8]
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
@@ -253,11 +468,40 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+        row_data = dict(row)
+        if row_data.get("status") == "stopped":
+            raise HTTPException(status_code=409, detail="会话已停止，请新建对话后继续")
 
-        state = json.loads(row["state_snapshot"])
+        state = json.loads(row_data["state_snapshot"])
         state["task"] = req.message
         state["messages"].append({"role": "user", "content": req.message})
         state["status"] = "running"
+        state["current_round_id"] = round_id
+        state["trace"] = []
+        state["final_answer"] = ""
+        state["result_history"] = []
+        state["errors"] = []
+        state["used_tools"] = []
+        state["modified_files"] = []
+        state["task_list"] = []
+        state["current_task_index"] = 0
+        state["current_task"] = ""
+        state["last_tool_result"] = {}
+        state["last_execution"] = {}
+        state["pending_tool_approval"] = None
+        state["pending_loop_approval"] = None
+        state["runtime_metrics"] = {
+            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "llm_calls": 0,
+            "tool_calls": [],
+        }
+
+        conn.execute(
+            """INSERT INTO conversation_rounds
+               (id, session_id, project_id, user_message, status, created_at)
+               VALUES (?, ?, ?, ?, 'running', ?)""",
+            (round_id, sid, project_id, req.message, now),
+        )
 
         conn.execute(
             "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
@@ -268,6 +512,7 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         session_id=sid,
         reply="消息已接收，Agent 开始处理...",
         status="running",
+        round_id=round_id,
     )
 
 
@@ -363,20 +608,19 @@ class AgentRunner:
             print(f"Agent runner error: {e}")
         finally:
             self.done.set()
-            if self.run_id != my_run_id:
-                return
-            with get_connection() as conn:
-                row = conn.execute(
-                    "SELECT status FROM sessions WHERE id = ?",
-                    (self.sid,),
-                ).fetchone()
-                if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
-                    conn.execute(
-                        "UPDATE sessions SET status = 'completed' "
-                        "WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+            if self.run_id == my_run_id:
+                with get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT status FROM sessions WHERE id = ?",
                         (self.sid,),
-                    )
-            cleanup_cancel_event(self.sid)
+                    ).fetchone()
+                    if row and row["status"] in ("running", "awaiting_approval", "needs_fix", "next_step"):
+                        conn.execute(
+                            "UPDATE sessions SET status = 'completed' "
+                            "WHERE id = ? AND status NOT IN ('stopped', 'skipped')",
+                            (self.sid,),
+                        )
+                cleanup_cancel_event(self.sid)
 
 
 _agent_runners: Dict[str, AgentRunner] = {}
@@ -438,6 +682,26 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             await websocket.send_json({"phase": "start", "message": "Agent 正在执行..."})
 
         while not runner.done.is_set():
+            if runner.cancel_event.is_set():
+                await websocket.send_json({
+                    "phase": "cancelled",
+                    "message": "任务已停止",
+                    "status": "stopped",
+                })
+                return
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT status FROM sessions WHERE id = ?",
+                    (sid,),
+                ).fetchone()
+            if row and row["status"] == "stopped":
+                runner.cancel_event.set()
+                await websocket.send_json({
+                    "phase": "cancelled",
+                    "message": "任务已停止",
+                    "status": "stopped",
+                })
+                return
             await asyncio.sleep(0.5)
 
         with get_connection() as conn:
@@ -447,12 +711,20 @@ async def chat_stream(websocket: WebSocket, project_id: str, sid: str):
             ).fetchone()
         final_state = json.loads(row["state_snapshot"]) if row else {}
 
-        await websocket.send_json({
-            "phase": "done",
-            "message": "任务完成",
-            "final_answer": final_state.get("final_answer", ""),
-            "status": final_state.get("status"),
-        })
+        if final_state.get("status") == "stopped":
+            await websocket.send_json({
+                "phase": "cancelled",
+                "message": "任务已停止",
+                "final_answer": final_state.get("final_answer", ""),
+                "status": "stopped",
+            })
+        else:
+            await websocket.send_json({
+                "phase": "done",
+                "message": "任务完成",
+                "final_answer": final_state.get("final_answer", ""),
+                "status": final_state.get("status"),
+            })
         await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
@@ -490,6 +762,76 @@ def get_plan(project_id: str, sid: str):
 
     return [dict(p) for p in plans]
 
+
+@app.get("/projects/{project_id}/sessions/{sid}/rounds", response_model=list[ConversationRoundResponse])
+def list_conversation_rounds(project_id: str, sid: str, limit: int = 8, before: str = ""):
+    limit = max(1, min(int(limit or 8), 50))
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        if before:
+            rounds = conn.execute(
+                """SELECT * FROM conversation_rounds
+                   WHERE session_id = ? AND created_at < ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (sid, before, limit),
+            ).fetchall()
+        else:
+            rounds = conn.execute(
+                """SELECT * FROM conversation_rounds
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (sid, limit),
+            ).fetchall()
+        rounds = list(reversed(rounds))
+        round_refs = conn.execute(
+            "SELECT id, created_at FROM conversation_rounds WHERE session_id = ? ORDER BY created_at ASC",
+            (sid,),
+        ).fetchall()
+        plans = conn.execute(
+            "SELECT *, rowid FROM plans WHERE session_id = ? ORDER BY rowid ASC",
+            (sid,),
+        ).fetchall()
+
+    plans_by_round: Dict[str, list[dict]] = {}
+    round_items = [dict(row) for row in rounds]
+    all_round_items = [dict(row) for row in round_refs]
+    for plan in plans:
+        item = dict(plan)
+        plan_round_id = item.get("round_id") or ""
+        if not plan_round_id:
+            # Backfill display ownership for older plan rows created before round_id existed.
+            plan_created_at = item.get("created_at") or ""
+            for idx, round_item in enumerate(all_round_items):
+                current_created = round_item.get("created_at") or ""
+                next_created = all_round_items[idx + 1].get("created_at") if idx + 1 < len(all_round_items) else None
+                if plan_created_at >= current_created and (not next_created or plan_created_at < next_created):
+                    plan_round_id = round_item["id"]
+                    break
+        if plan_round_id:
+            plans_by_round.setdefault(plan_round_id, []).append(item)
+
+    out = []
+    for item in round_items:
+        try:
+            item["trace_json"] = json.loads(item.get("trace_json") or "[]")
+        except json.JSONDecodeError:
+            item["trace_json"] = []
+        try:
+            item["runtime_metrics_json"] = json.loads(item.get("runtime_metrics_json") or "{}")
+        except json.JSONDecodeError:
+            item["runtime_metrics_json"] = {}
+        item["plans"] = plans_by_round.get(item["id"], [])
+        out.append(item)
+    return out
+
 # ------------------ 9. 用户对计划执行确认操作 ------------------
 
 
@@ -517,11 +859,12 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
         )
         status_map = {
             "agree": "approved",
-            "refine": "refining",
+            "refine": "skipped",
             "skip": "skipped",
             "stop": "stopped",
         }
         new_status = status_map.get(req.action, "pending")
+        session_status = "refining" if req.action == "refine" else new_status
         conn.execute(
             "UPDATE plans SET status = ? WHERE id = ?",
             (new_status, pid),
@@ -541,9 +884,29 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
                 "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
                 (sid,),
             )
+        if req.action == "refine":
+            feedback = (req.feedback or "").strip()
+            state = json.loads(row["state_snapshot"] or "{}")
+            state["plan_feedback"] = feedback
+            conn.execute(
+                "UPDATE sessions SET state_snapshot = ? WHERE id = ?",
+                (json.dumps(state, ensure_ascii=False), sid),
+            )
+            conn.execute(
+                "UPDATE plans SET status = 'skipped' WHERE session_id = ? AND status IN ('pending', 'refining')",
+                (sid,),
+            )
+        if req.action in ("skip", "stop"):
+            state = json.loads(row["state_snapshot"] or "{}")
+            round_id = state.get("current_round_id")
+            if round_id:
+                conn.execute(
+                    "UPDATE conversation_rounds SET status = ?, finished_at = ? WHERE id = ?",
+                    (session_status, datetime.now().isoformat(), round_id),
+                )
         conn.execute(
             "UPDATE sessions SET status = ? WHERE id = ?",
-            (new_status, sid),
+            (session_status, sid),
         )
 
     if req.action == "stop":
@@ -554,6 +917,85 @@ def plan_action(project_id: str, sid: str, pid: str, req: PlanActionRequest):
         action=req.action,
         status=new_status,
     )
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/command-approval", response_model=CommandApprovalResponse)
+def command_approval(project_id: str, sid: str, req: CommandApprovalRequest):
+    action = (req.action or "").strip().lower()
+    if action not in ("approve", "reject", "revise"):
+        raise HTTPException(status_code=400, detail="action 须为 approve、reject 或 revise")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        state = json.loads(row["state_snapshot"] or "{}")
+        pending = state.get("pending_tool_approval") or {}
+        if pending.get("id") != req.approval_id or pending.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="没有匹配的待确认命令")
+
+        next_status = {
+            "approve": "approved",
+            "reject": "rejected",
+            "revise": "revision_requested",
+        }[action]
+        pending["status"] = next_status
+        pending["feedback"] = (req.feedback or "").strip()
+        state["pending_tool_approval"] = pending
+        state["status"] = "running"
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = 'running' WHERE id = ?",
+            (json.dumps(state, ensure_ascii=False), sid),
+        )
+
+    return CommandApprovalResponse(
+        approval_id=req.approval_id,
+        action=action,
+        status=next_status,
+    )
+
+
+@app.post("/projects/{project_id}/sessions/{sid}/continue-approval", response_model=LoopApprovalResponse)
+def continue_approval(project_id: str, sid: str, req: LoopApprovalRequest):
+    action = (req.action or "").strip().lower()
+    if action not in ("continue", "stop"):
+        raise HTTPException(status_code=400, detail="action 须为 continue 或 stop")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND project_id = ?",
+            (sid, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="会话不存在于该项目下")
+
+        state = json.loads(row["state_snapshot"] or "{}")
+        pending = state.get("pending_loop_approval") or {}
+        if pending.get("id") != req.approval_id or pending.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="没有匹配的待确认继续请求")
+
+        next_status = "continued" if action == "continue" else "stopped"
+        pending["status"] = next_status
+        state["pending_loop_approval"] = pending
+        state["status"] = "running" if action == "continue" else "stopped"
+        conn.execute(
+            "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
+            (json.dumps(state, ensure_ascii=False), state["status"], sid),
+        )
+
+    if action == "stop":
+        get_cancel_event(sid).set()
+
+    return LoopApprovalResponse(
+        approval_id=req.approval_id,
+        action=action,
+        status=next_status,
+    )
+
 
 # ------------------ 9.5 停止会话运行 ------------------
 
@@ -576,6 +1018,13 @@ def stop_session(project_id: str, sid: str):
             "UPDATE plans SET status = 'stopped' WHERE session_id = ? AND status = 'pending'",
             (sid,),
         )
+        state = json.loads(row["state_snapshot"] or "{}")
+        round_id = state.get("current_round_id")
+        if round_id:
+            conn.execute(
+                "UPDATE conversation_rounds SET status = 'stopped', finished_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), round_id),
+            )
 
     get_cancel_event(sid).set()
 

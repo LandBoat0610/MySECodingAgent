@@ -111,13 +111,24 @@ def tool_result(
         output: str,
         path: Optional[str] = None,
         returncode: Optional[int] = None,
-        meta: Optional[Dict[str, Any]] = None) -> str:
+        meta: Optional[Dict[str, Any]] = None,
+        stdout: str = "",
+        stderr: str = "",
+        summary: str = "",
+        error_type: Optional[str] = None,
+        modified_files: Optional[List[str]] = None) -> str:
     return json.dumps({
         "status": status,
+        "success": status == "success",
         "output": safe_trim(output),
+        "summary": summary,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error_type": error_type,
         "path": path,
         "returncode": returncode,
         "meta": meta or {},
+        "modified_files": modified_files or [],
     }, ensure_ascii=False)
 
 
@@ -155,11 +166,12 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
     from agent.backend.database import get_connection
     try:
         snapshot = _serialize_state(state)
+        effective_status = status or state.get("status")
         with get_connection() as conn:
-            if status:
+            if effective_status:
                 conn.execute(
                     "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
-                    (snapshot, status, session_id),
+                    (snapshot, effective_status, session_id),
                 )
             else:
                 conn.execute(
@@ -244,7 +256,10 @@ def log_state(
     if state and isinstance(state, dict) and "status" in state:
         item["session_status"] = state["status"]
     trace.append(item)
-    print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
+    try:
+        print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
+    except UnicodeEncodeError:
+        pass
 
     # 如果提供了 session_id 和 state，则同步到数据库
     if session_id and state:

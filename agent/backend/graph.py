@@ -1,7 +1,9 @@
 # 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
+import re
+import uuid
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 try:
     from langgraph.graph import StateGraph, END
@@ -12,7 +14,12 @@ except Exception:
     END = "__end__"
 
 from agent.backend.state import AgentState
-from agent.backend.config import get_effective_model, MAX_STEP_ITERATIONS, MAX_REFLECTIONS
+from agent.backend.config import (
+    get_effective_model,
+    MAX_STEP_ITERATIONS,
+    MAX_REFLECTIONS,
+    STEP_ITERATIONS_BY_DIFFICULTY,
+)
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
@@ -161,6 +168,112 @@ def _check_cancel(state: AgentState) -> bool:
     return False
 
 
+def _await_bash_approval(session_id: str, function_args: Dict[str, Any], state: AgentState) -> Optional[str]:
+    from agent.backend.utils import update_session_state, tool_result
+    from agent.backend.database import get_connection
+    from agent.backend.config import BLOCKED_BASH_PATTERNS as _BLOCKED
+
+    command = function_args.get("command", "")
+    if not command.strip():
+        return tool_result("error", "Empty bash command", error_type="validation")
+
+    risk_level = "low"
+    if any(re.search(p, command) for p in _BLOCKED):
+        risk_level = "high"
+
+    approval_id = uuid.uuid4().hex[:10]
+    purpose = state.get("current_task", "") or "执行命令"
+
+    pending = {
+        "id": approval_id,
+        "tool": "execute_bash",
+        "command": command,
+        "purpose": purpose,
+        "risk_level": risk_level,
+        "status": "pending",
+        "feedback": "",
+    }
+    state["pending_tool_approval"] = pending
+    state["status"] = "awaiting_tool_approval"
+
+    trace = state.get("trace", [])
+    log_state(trace, "tool_approval", f"等待确认: {command}",
+              meta={"pending_tool_approval": pending}, session_id=session_id, state=state)
+    update_session_state(session_id, state, status="awaiting_tool_approval")
+
+    timeout = 60
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        time.sleep(2)
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_snapshot FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                continue
+            snap = json.loads(row["state_snapshot"] or "{}")
+            pending_now = snap.get("pending_tool_approval") or {}
+            st = pending_now.get("status", "")
+
+            if st == "approved":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户已确认,执行命令", session_id=session_id, state=state)
+                return None
+            if st == "rejected":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户拒绝,跳过命令", session_id=session_id, state=state)
+                msg = f"用户拒绝: {command}"
+                if feedback:
+                    msg += f" ({feedback})"
+                return tool_result("error", msg, error_type="rejected", summary=msg)
+            if st == "revision_requested":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", f"用户要求修改: {feedback}", session_id=session_id, state=state)
+                return tool_result("error", f"用户要求修改: {feedback}", error_type="revision_requested",
+                                   summary=f"用户要求修改: {feedback}")
+            if st == "stopped":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="stopped")
+                return tool_result("error", "Session stopped", error_type="stopped", summary="会话已终止")
+
+    state.pop("pending_tool_approval", None)
+    update_session_state(session_id, state, status="running")
+    log_state(trace, "bash_approval", "确认超时,跳过命令", session_id=session_id, state=state)
+    return tool_result("error", f"Approval timeout for command: {command}", error_type="timeout",
+                       summary=f"命令确认超时: {command}")
+
+
+def wait_for_loop_approval(session_id: str, approval_id: str) -> str:
+    from agent.backend.database import get_connection
+    timeout = 300
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
+                (session_id,)
+            ).fetchone()
+        if row:
+            if row["status"] == "stopped":
+                return "stopped"
+            try:
+                snapshot = json.loads(row["state_snapshot"] or "{}")
+            except json.JSONDecodeError:
+                snapshot = {}
+            pending = snapshot.get("pending_loop_approval") or {}
+            if pending.get("id") == approval_id:
+                status = pending.get("status")
+                if status in ("continued", "stopped"):
+                    return status
+        time.sleep(0.5)
+    return "timeout"
+
+
 def executor_node(state: AgentState) -> AgentState:
     if state.get("status") == "stopped":
         return state
@@ -186,10 +299,75 @@ def executor_node(state: AgentState) -> AgentState:
     messages.append({"role": "user", "content": step_context})
     action_log: List[Dict[str, Any]] = []
 
-    for iteration in range(MAX_STEP_ITERATIONS):
+    step_iteration_limit = STEP_ITERATIONS_BY_DIFFICULTY.get(
+        str(state.get("task_difficulty") or "").lower(),
+        MAX_STEP_ITERATIONS,
+    )
+
+    iteration = 0
+    current_iteration_limit = step_iteration_limit
+    while True:
+        if iteration >= current_iteration_limit:
+            if not session_id:
+                break
+            approval_id = uuid.uuid4().hex[:8]
+            state["pending_loop_approval"] = {
+                "id": approval_id,
+                "status": "pending",
+                "current_iteration": iteration,
+                "current_limit": current_iteration_limit,
+                "additional_iterations": step_iteration_limit,
+                "difficulty": state.get("task_difficulty", "unknown"),
+                "current_task": step_task,
+            }
+            state["status"] = "awaiting_continue_approval"
+            log_state(
+                trace,
+                "continue_approval",
+                (
+                    f"当前步骤已达到 {current_iteration_limit} 轮工具调用上限。"
+                    f"如需继续处理步骤 [{step_task}]，请确认继续。"
+                ),
+                session_id=session_id,
+                state=state,
+            )
+            approval_result = wait_for_loop_approval(session_id, approval_id)
+            if approval_result == "continued":
+                state["status"] = "running"
+                state["pending_loop_approval"] = None
+                current_iteration_limit += step_iteration_limit
+                log_state(
+                    trace,
+                    "continue_approval",
+                    f"用户确认继续，当前步骤工具调用上限扩展到 {current_iteration_limit} 轮。",
+                    session_id=session_id,
+                    state=state,
+                )
+            else:
+                state["pending_loop_approval"] = None
+                if approval_result == "stopped":
+                    state["status"] = "stopped"
+                    return state
+                state["last_tool_result"] = {
+                    "status": "error",
+                    "output": (
+                        "Max iterations reached before step completion. "
+                        f"limit={current_iteration_limit}, difficulty={state.get('task_difficulty', 'unknown')}, "
+                        f"approval={approval_result}"
+                    ),
+                    "returncode": None,
+                    "action_log": action_log,
+                }
+                state.setdefault("errors", []).append(state["last_tool_result"])
+                if session_id:
+                    from agent.backend.utils import update_session_state
+                    update_session_state(session_id, state)
+                return state
+
         if _check_cancel(state):
             return state
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
+        iteration += 1
         try:
             response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
             record_llm_usage(state, response)
@@ -251,7 +429,18 @@ def executor_node(state: AgentState) -> AgentState:
                 else:
                     t0 = time.monotonic()
                     try:
-                        result_text = func(**function_args)
+                        if function_name == "execute_bash":
+                            from agent.backend.config import BASH_APPROVAL_REQUIRED
+                            if BASH_APPROVAL_REQUIRED and session_id and "_approved" not in function_args:
+                                result_text = _await_bash_approval(session_id, function_args, state)
+                                if result_text is not None:
+                                    pass
+                                else:
+                                    result_text = func(**function_args)
+                            else:
+                                result_text = func(**function_args)
+                        else:
+                            result_text = func(**function_args)
                     except Exception as e:
                         result_text = tool_result("error", f"Tool exception: {e}\n{traceback.format_exc()}")
                     elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -323,6 +512,9 @@ def check_result_node(state: AgentState) -> AgentState:
         if isinstance(returncode, int) and returncode != 0:
             failed = True
             reason = "Execution returned non-zero exit code"
+        elif result.get("status") == "error":
+            failed = True
+            reason = f"Execution failed: {result.get('error_type') or result.get('summary', 'unknown error')}"
         elif any(token in stderr_text for token in error_signals):
             failed = True
             reason = "Execution stderr contains real error signals"

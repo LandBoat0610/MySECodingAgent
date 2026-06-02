@@ -1,8 +1,8 @@
 <template>
   <div class="live-eval-panel" :class="{ collapsed }">
     <button type="button" class="panel-toggle" @click="collapsed = !collapsed">
-      <span class="panel-title">实时评测</span>
       <span class="panel-chevron">{{ collapsed ? '▸' : '▾' }}</span>
+      <span class="panel-title">实时评测</span>
     </button>
     <div v-if="!collapsed" class="panel-body">
       <div class="panel-row">
@@ -97,6 +97,7 @@ const toolRatePct = computed(() => {
   font-size: 14px;
   color: var(--text-primary);
   overflow: hidden;
+  flex: 0 0 auto;
 }
 
 .live-eval-panel.collapsed .panel-body {
@@ -107,10 +108,10 @@ const toolRatePct = computed(() => {
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--bg-surface);
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
   border: none;
   cursor: pointer;
   color: var(--text-secondary);
@@ -119,7 +120,7 @@ const toolRatePct = computed(() => {
 }
 
 .live-eval-panel.collapsed .panel-toggle {
-  border-radius: 10px;
+  border-radius: 0;
 }
 
 .panel-toggle:hover {
@@ -127,7 +128,8 @@ const toolRatePct = computed(() => {
 }
 
 .panel-title {
-  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .panel-chevron {
@@ -136,7 +138,9 @@ const toolRatePct = computed(() => {
 }
 
 .panel-body {
-  padding: 8px 10px 10px;
+  padding: 8px 14px 12px;
+  max-height: 190px;
+  overflow-y: auto;
 }
 
 .panel-row {

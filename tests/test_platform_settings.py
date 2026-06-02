@@ -2,11 +2,15 @@
 """测试 platform_settings 模块：Agent 配置的读写与合并逻辑。"""
 from agent.backend.platform_settings import (
     get_agent_config,
+    get_skills,
+    get_tool_settings,
     set_agent_config,
 )
 import json
 import os
+import sqlite3
 import sys
+import pytest
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -56,6 +60,33 @@ class TestGetAgentConfig:
         )
         cfg = get_agent_config()
         assert "model" in cfg  # still returns defaults
+
+
+class TestMissingPlatformSettingsTable:
+    def test_reads_use_defaults_before_database_initialization(self, monkeypatch):
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("no such table: platform_settings")
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.__exit__.return_value = None
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_connection", lambda: mock_conn
+        )
+
+        assert "model" in get_agent_config()
+        assert all(get_tool_settings().values())
+        assert get_skills() == []
+
+    def test_other_database_errors_are_not_hidden(self, monkeypatch):
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.__exit__.return_value = None
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_connection", lambda: mock_conn
+        )
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            get_tool_settings()
 
 
 class TestSetAgentConfig:

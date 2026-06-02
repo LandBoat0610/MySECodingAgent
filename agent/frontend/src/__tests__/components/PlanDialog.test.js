@@ -87,14 +87,18 @@ describe('PlanDialog.vue', () => {
             expect(mockStore.fetchPlans).toHaveBeenCalled()
         })
 
-        it('should call doPlanAction with "refine"', async () => {
+        it('should ask for feedback before calling doPlanAction with "refine"', async () => {
             const mockStore = createMockStore({
                 pendingPlans: [{ id: 'plan-1', content: 'Step', status: 'pending' }]
             })
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(PlanDialog)
             await wrapper.find('.btn-refine').trigger('click')
-            expect(mockStore.doPlanAction).toHaveBeenCalledWith('plan-1', 'refine')
+            expect(wrapper.find('.refine-box').exists()).toBe(true)
+            expect(mockStore.doPlanAction).not.toHaveBeenCalled()
+            await wrapper.find('.refine-box textarea').setValue('先检查现有代码')
+            await wrapper.find('.btn-refine').trigger('click')
+            expect(mockStore.doPlanAction).toHaveBeenCalledWith('plan-1', 'refine', '先检查现有代码')
         })
 
         it('should call doPlanAction with "skip"', async () => {

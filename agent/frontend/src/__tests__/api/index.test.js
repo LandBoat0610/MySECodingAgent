@@ -93,6 +93,17 @@ describe('API layer', () => {
         })
     })
 
+    describe('getRounds', () => {
+        it('should call GET rounds with pagination params', async () => {
+            axios.get.mockResolvedValue({ data: [] })
+            await api.getRounds('proj-1', 'sess-1', { limit: 8, before: '2026-01-01' })
+            expect(axios.get).toHaveBeenCalledWith(
+                '/projects/proj-1/sessions/sess-1/rounds',
+                { params: { limit: 8, before: '2026-01-01' } }
+            )
+        })
+    })
+
     describe('planAction', () => {
         it('should call POST with action body', async () => {
             axios.post.mockResolvedValue({ data: { status: 'approved' } })
@@ -102,6 +113,35 @@ describe('API layer', () => {
                 { action: 'agree' }
             )
             expect(result).toEqual({ status: 'approved' })
+        })
+
+        it('should include feedback when provided', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'refining' } })
+            await api.planAction('proj-1', 'sess-1', 'plan-1', 'refine', '先检查文件')
+            expect(axios.post).toHaveBeenCalledWith(
+                '/projects/proj-1/sessions/sess-1/plan/plan-1/action',
+                { action: 'refine', feedback: '先检查文件' }
+            )
+        })
+    })
+
+    describe('commandApproval', () => {
+        it('should call command approval without feedback', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'approved' } })
+            await api.commandApproval('proj-1', 'sess-1', 'approval-1', 'approve')
+            expect(axios.post).toHaveBeenCalledWith(
+                '/projects/proj-1/sessions/sess-1/command-approval',
+                { approval_id: 'approval-1', action: 'approve' }
+            )
+        })
+
+        it('should include feedback when revising command', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'revision_requested' } })
+            await api.commandApproval('proj-1', 'sess-1', 'approval-1', 'revise', '改成 pytest -q')
+            expect(axios.post).toHaveBeenCalledWith(
+                '/projects/proj-1/sessions/sess-1/command-approval',
+                { approval_id: 'approval-1', action: 'revise', feedback: '改成 pytest -q' }
+            )
         })
     })
 
