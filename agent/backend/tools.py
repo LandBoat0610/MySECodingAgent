@@ -344,10 +344,18 @@ def read_file_range(path: str, offset: int = 1, limit: int = 200) -> str:
         selected = lines[start:end]
 
         if not selected:
-            return tool_result("success",
-                               json.dumps({"lines": [], "total_lines": len(lines), "offset": offset}, ensure_ascii=False),
-                               path=safe_path,
-                               summary=f"{path}: 行 {offset}-{min(end, len(lines))} 无内容 (共 {len(lines)} 行)")
+            return tool_result(
+                "success",
+                json.dumps(
+                    {"lines": [], "total_lines": len(lines), "offset": offset},
+                    ensure_ascii=False,
+                ),
+                path=safe_path,
+                summary=(
+                    f"{path}: 行 {offset}-{min(end, len(lines))} 无内容"
+                    f" (共 {len(lines)} 行)"
+                ),
+            )
 
         return tool_result("success",
                            "".join(selected),
@@ -530,7 +538,9 @@ def search_code(pattern: str, path: str = ".", case_sensitive: bool = False) -> 
             targets = []
             for root, _, files in os.walk(safe_path):
                 for f in files:
-                    if f.endswith(('.py', '.js', '.ts', '.tsx', '.json', '.md', '.txt', '.cfg', '.ini', '.yaml', '.yml', '.sh', '.bat', '.html', '.css')):
+                    ext = f.endswith
+                    if ext(('.py', '.js', '.ts', '.tsx', '.json', '.md', '.txt',
+                            '.cfg', '.ini', '.yaml', '.yml', '.sh', '.bat', '.html', '.css')):
                         targets.append(os.path.join(root, f))
         else:
             return tool_result("error", f"Path not found: {path}", path=safe_path,
@@ -542,7 +552,10 @@ def search_code(pattern: str, path: str = ".", case_sensitive: bool = False) -> 
                 with open(target, 'r', encoding='utf-8', errors='ignore') as f:
                     for i, line in enumerate(f, 1):
                         if re.search(pattern, line, flags):
-                            matches.append({"file": os.path.relpath(target, safe_path), "line": i, "text": line.strip()[:200]})
+                            matches.append({
+                                "file": os.path.relpath(target, safe_path),
+                                "line": i, "text": line.strip()[:200],
+                            })
                             if len(matches) >= 50:
                                 break
             except Exception:
@@ -550,10 +563,15 @@ def search_code(pattern: str, path: str = ".", case_sensitive: bool = False) -> 
             if len(matches) >= 50:
                 break
 
-        return tool_result("success",
-                           json.dumps({"pattern": pattern, "count": len(matches), "matches": matches}, ensure_ascii=False),
-                           path=safe_path,
-                           summary=f"搜索'{pattern}': {len(matches)} 条匹配")
+        return tool_result(
+            "success",
+            json.dumps(
+                {"pattern": pattern, "count": len(matches), "matches": matches},
+                ensure_ascii=False,
+            ),
+            path=safe_path,
+            summary=f"搜索'{pattern}': {len(matches)} 条匹配",
+        )
     except Exception as e:
         return tool_result("error", str(e), path=path, summary=f"搜索异常: {e}")
 
@@ -578,8 +596,6 @@ def apply_patch(target: str, patch: str) -> str:
         for hunk_match in hunks:
             old_start = int(hunk_match[0])
             old_count = int(hunk_match[1]) if hunk_match[1] else 1
-            new_start = int(hunk_match[2])
-            new_count = int(hunk_match[3]) if hunk_match[3] else 1
             hunk_body = hunk_match[4]
 
             new_lines = []

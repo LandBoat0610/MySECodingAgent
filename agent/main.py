@@ -1,3 +1,4 @@
+# flake8: noqa: E402
 # main.py
 import os
 from dotenv import load_dotenv

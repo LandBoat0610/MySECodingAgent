@@ -20,7 +20,6 @@ from agent.backend.eval_scoring import build_eval_prompt, decide_passed
 from agent.backend.eval_storage import DATASETS_DIR, WORKSPACES_DIR, ensure_eval_storage_dirs
 from agent.backend.platform_settings import get_agent_config
 from agent.backend.utils import sync_workspace_file_back
-from agent.backend.config import eval_model_context
 
 _eval_threads: Dict[str, threading.Thread] = {}
 _eval_cancel: Dict[str, threading.Event] = {}
@@ -557,8 +556,13 @@ def _compute_quality_metrics(row: Dict[str, Any]) -> None:
     security_blob = gather_code_blob_for_security_scan(fs, iw)
     row["security_scores"] = compute_security_assessment(security_blob)
     rm_blob = fs.get("runtime_metrics")
-    row["rm_summary"] = summarize_runtime_metrics(rm_blob if isinstance(rm_blob, dict) else None)
-    row["radar_vec"] = build_radar_vector(row["ragas_scores"], row["judge_scores"], row["rm_summary"], row["security_scores"])
+    row["rm_summary"] = summarize_runtime_metrics(
+        rm_blob if isinstance(rm_blob, dict) else None
+    )
+    row["radar_vec"] = build_radar_vector(
+        row["ragas_scores"], row["judge_scores"],
+        row["rm_summary"], row["security_scores"],
+    )
 
 
 def _write_result_row(row: Dict[str, Any], task_id: str) -> None:
@@ -639,7 +643,8 @@ def _run_items_concurrent(task_id: str, items: List[Dict[str, Any]], cancel_ev: 
                 completed = len(results_by_idx)
                 with get_connection() as conn:
                     conn.execute(
-                        "UPDATE eval_tasks SET completed_items=?, passed_count=?, failed_count=?, updated_at=? WHERE id=?",
+                        "UPDATE eval_tasks SET completed_items=?, passed_count=?, "
+                        "failed_count=?, updated_at=? WHERE id=?",
                         (completed, passed_n, failed_n, row["finished"], task_id),
                     )
             except Exception:
@@ -654,8 +659,6 @@ def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading
 
     model_snap = (task_row.get("agent_model_snapshot") or "").strip()
     eval_method = task_row.get("eval_method") or "result"
-    passed_n = 0
-    failed_n = 0
 
     base_ws = os.path.join(WORKSPACES_DIR, task_id)
     try:
@@ -665,8 +668,6 @@ def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading
         pass
 
     try:
-        from agent.backend.graph import build_graph, run_manual_fallback
-
         if concurrency <= 1:
             _run_items_sequential(task_id, items, cancel_ev, model_snap, eval_method, base_ws)
         else:

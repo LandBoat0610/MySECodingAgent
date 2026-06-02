@@ -166,11 +166,12 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
     from agent.backend.database import get_connection
     try:
         snapshot = _serialize_state(state)
+        effective_status = status or state.get("status")
         with get_connection() as conn:
-            if status:
+            if effective_status:
                 conn.execute(
                     "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
-                    (snapshot, status, session_id),
+                    (snapshot, effective_status, session_id),
                 )
             else:
                 conn.execute(
