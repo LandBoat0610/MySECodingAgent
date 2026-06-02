@@ -189,10 +189,12 @@ def _await_bash_approval(session_id: str, function_args: Dict[str, Any], state: 
         "feedback": "",
     }
     state["pending_tool_approval"] = pending
+    state["status"] = "awaiting_tool_approval"
 
     trace = state.get("trace", [])
-    log_state(trace, "bash_approval", f"等待确认: {command}", session_id=session_id, state=state)
-    update_session_state(session_id, state, status="pending_approval")
+    log_state(trace, "tool_approval", f"等待确认: {command}",
+              meta={"pending_tool_approval": pending}, session_id=session_id, state=state)
+    update_session_state(session_id, state, status="awaiting_tool_approval")
 
     timeout = 60
     start_time = time.time()
@@ -411,7 +413,10 @@ def check_result_node(state: AgentState) -> AgentState:
     reason = "Result passed basic checks"
 
     if execution:
-        if isinstance(returncode, int) and returncode != 0:
+        if result.get("status") == "error":
+            failed = True
+            reason = f"Execution failed: {result.get('error_type') or result.get('summary','')}"
+        elif isinstance(returncode, int) and returncode != 0:
             failed = True
             reason = "Execution returned non-zero exit code"
         elif any(token in stderr_text for token in error_signals):
