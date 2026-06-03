@@ -221,7 +221,9 @@ def _infer_test_commands(state: AgentState) -> List[str]:
         commands.append(run_command)
     workspace_dir = state.get("workspace_dir", "")
     try:
-        if os.path.exists(os.path.join(workspace_dir, "pytest.ini")) or os.path.isdir(os.path.join(workspace_dir, "tests")):
+        has_pytest_config = os.path.exists(os.path.join(workspace_dir, "pytest.ini"))
+        has_tests_dir = os.path.isdir(os.path.join(workspace_dir, "tests"))
+        if has_pytest_config or has_tests_dir:
             commands.append("pytest -q")
         if os.path.exists(os.path.join(workspace_dir, "agent", "frontend", "package.json")):
             commands.append("cd agent/frontend && npm run test")
@@ -794,7 +796,8 @@ def verifier_node(state: AgentState) -> AgentState:
     else:
         if result.get("status") == "error":
             failed = True
-            reason = f"Last tool returned error status: {result.get('error_type') or result.get('summary') or 'unknown'}"
+            error_label = result.get("error_type") or result.get("summary") or "unknown"
+            reason = f"Last tool returned error status: {error_label}"
             evidence.append(str(result.get("summary") or result.get("output") or ""))
         elif any(token in combined_output for token in error_signals):
             failed = True
