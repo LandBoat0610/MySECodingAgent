@@ -20,7 +20,7 @@
         <div class="preview-line-numbers" aria-hidden="true">
           <span v-for="n in lineNumbers" :key="n">{{ n }}</span>
         </div>
-        <pre class="preview-code"><code>{{ store.fileContent }}</code></pre>
+        <pre class="preview-code"><code v-html="highlightedContent"></code></pre>
       </div>
     </div>
   </div>
@@ -29,12 +29,22 @@
 <script setup>
 import { computed } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
+import { highlightCode, inferLangFromPath } from '../utils/highlight.js'
 
 const store = useAgentStore()
 
 const lineNumbers = computed(() => {
   const count = (store.fileContent || '').split('\n').length
   return Array.from({ length: count }, (_, i) => i + 1)
+})
+
+const fileLang = computed(() => {
+  const path = store.selectedFile?.path || ''
+  return inferLangFromPath(path)
+})
+
+const highlightedContent = computed(() => {
+  return highlightCode(store.fileContent || '', fileLang.value)
 })
 
 async function setSelectedFile(node) {

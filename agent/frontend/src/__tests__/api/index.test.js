@@ -154,6 +154,32 @@ describe('API layer', () => {
         })
     })
 
+    describe('getFileContent', () => {
+        it('should call GET /projects/:projectId/files/content with path param', async () => {
+            axios.get.mockResolvedValue({ data: { path: 'main.py', content: 'print("hello")' } })
+            const result = await api.getFileContent('proj-1', 'main.py')
+            expect(axios.get).toHaveBeenCalledWith('/projects/proj-1/files/content', { params: { path: 'main.py' } })
+            expect(result.content).toBe('print("hello")')
+        })
+    })
+
+    describe('stopSession', () => {
+        it('should call POST /projects/:projectId/sessions/:sessionId/stop', async () => {
+            axios.post.mockResolvedValue({ data: { status: 'stopped' } })
+            const result = await api.stopSession('proj-1', 'sess-1')
+            expect(axios.post).toHaveBeenCalledWith('/projects/proj-1/sessions/sess-1/stop')
+            expect(result.status).toBe('stopped')
+        })
+    })
+
+    describe('createWebSocket', () => {
+        it('should create WebSocket with correct URL', () => {
+            const ws = api.createWebSocket('proj-1', 'sess-1')
+            expect(ws).toBeInstanceOf(WebSocket)
+            expect(ws.url).toBe('ws://localhost:3000/projects/proj-1/sessions/sess-1/chat/stream')
+        })
+    })
+
     describe('getAgentConfig', () => {
         it('should call GET /settings/agent-config', async () => {
             axios.get.mockResolvedValue({ data: { model: 'gpt-4o-mini', version_label: '' } })

@@ -43,6 +43,8 @@ export const useAgentStore = defineStore('agent', () => {
   const traceLogs = ref([])
   const chatMessages = ref([])
   const finalAnswer = ref('')
+  const ragSources = ref([])        // RAG 知识来源
+  const memorySummary = ref('')     // 记忆摘要
   const agentRunning = ref(false)
   const wsConnection = ref(null)
   const loading = ref(false)
@@ -169,6 +171,8 @@ export const useAgentStore = defineStore('agent', () => {
     traceLogs.value = []
     chatMessages.value = []
     finalAnswer.value = ''
+    ragSources.value = []
+    memorySummary.value = ''
     sessionStatus.value = 'idle'
     stateSnapshot.value = null
     selectedFile.value = null
@@ -288,6 +292,8 @@ export const useAgentStore = defineStore('agent', () => {
     traceLogs.value = []
     chatMessages.value = []
     finalAnswer.value = ''
+    ragSources.value = []
+    memorySummary.value = ''
     stateSnapshot.value = null
     sessionStatus.value = 'idle'
     agentRunning.value = false
@@ -483,6 +489,14 @@ export const useAgentStore = defineStore('agent', () => {
         if (data.type === 'trace' && data.data) {
           traceLogs.value.push(data.data)
           const meta = data.data.meta || {}
+          // 提取 RAG 来源
+          if (meta.rag_sources && Array.isArray(meta.rag_sources)) {
+            ragSources.value = [...ragSources.value, ...meta.rag_sources]
+          }
+          // 提取记忆摘要
+          if (meta.memory_summary) {
+            memorySummary.value = meta.memory_summary
+          }
           if (
             meta.tokens_total != null ||
             meta.tool_events_count != null ||
@@ -932,5 +946,7 @@ export const useAgentStore = defineStore('agent', () => {
     prevRoundPlanIds,
     roundsHasMore,
     roundsLoadingOlder,
+    ragSources,
+    memorySummary,
   }
 })

@@ -141,6 +141,8 @@ describe('agent store', () => {
             expect(store.traceLogs).toEqual([])
             expect(store.chatMessages).toEqual([])
             expect(store.finalAnswer).toBe('')
+            expect(store.ragSources).toEqual([])
+            expect(store.memorySummary).toBe('')
             expect(store.agentRunning).toBe(false)
             expect(store.agentRunStartedAt).toBeNull()
             expect(store.livePerf.tokensTotal).toBe(0)

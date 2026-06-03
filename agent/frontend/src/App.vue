@@ -55,6 +55,7 @@ onMounted(async () => {
   --info: #89dceb;
   --scrollbar-bg: #1e1e2e;
   --scrollbar-thumb: #45475a;
+  --font-code: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
 }
 
 html, body {
@@ -64,6 +65,14 @@ html, body {
   font-size: 16px;
   color: var(--text-primary);
   background: var(--bg-primary);
+}
+
+/* ---- 全局代码字体 ---- */
+code, pre, .hljs, .hljs *,
+[class*='language-'], [class*='lang-'] {
+  font-family: var(--font-code) !important;
+  font-variant-ligatures: contextual;
+  font-feature-settings: "calt" 1, "liga" 1;
 }
 
 #app {

@@ -147,7 +147,14 @@
                   <span class="toggle-btn">{{ isRoundItemExpanded(rIdx, iIdx) ? '▾' : '▸' }}</span>
                 </div>
                 <div v-if="isRoundItemExpanded(rIdx, iIdx)" class="card-body">
-                  <div class="observe-output">{{ parseObserveOutput(item.content) }}</div>
+                  <ToolResultCard
+                    :toolName="getObserveToolName(round.displayTrace, iIdx)"
+                    :content="item.content"
+                  />
+                  <RagSources
+                    v-if="extractRagSources(item).length > 0"
+                    :sources="extractRagSources(item)"
+                  />
                 </div>
               </div>
 
@@ -215,6 +222,15 @@
 
           <!-- 轮次分隔线（历史轮之间） -->
           <div v-if="!round.isCurrent && rIdx < allRounds.length - 1" class="round-separator"></div>
+
+          <!-- 最终结果 -->
+          <div v-if="round.finalAnswer" class="message assistant round-answer">
+            <div class="message-avatar">🤖</div>
+            <div class="message-body">
+              <div class="message-label">最终结果</div>
+              <div class="message-text md-content" v-html="renderMd(cleanFinalAnswer(round.finalAnswer))"></div>
+            </div>
+          </div>
 
         </template>
       </template>
@@ -301,7 +317,14 @@
                 <span class="toggle-btn">{{ legacyExpanded[iIdx] ? '▾' : '▸' }}</span>
               </div>
               <div v-if="legacyExpanded[iIdx]" class="card-body">
-                <div class="observe-output">{{ parseObserveOutput(item.content) }}</div>
+                <ToolResultCard
+                  :toolName="getObserveToolName(legacyTrace, iIdx)"
+                  :content="item.content"
+                />
+                <RagSources
+                  v-if="extractRagSources(item).length > 0"
+                  :sources="extractRagSources(item)"
+                />
               </div>
             </div>
             <div v-else-if="item.phase === 'finish_step'" class="timeline-card card-finish">
@@ -384,9 +407,17 @@ import { useAgentConfigStore } from '../stores/agentConfig.js'
 import PlanDialog from './PlanDialog.vue'
 import CommandApprovalDialog from './CommandApprovalDialog.vue'
 import ContinueApprovalDialog from './ContinueApprovalDialog.vue'
+import ToolResultCard from './ToolResultCard.vue'
+import DiffViewer from './DiffViewer.vue'
+import RagSources from './RagSources.vue'
 import { marked } from 'marked'
+import { markedHighlight } from '../utils/highlight.js'
 
-marked.setOptions({ gfm: true, breaks: true })
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+  highlight: markedHighlight
+})
 
 function renderMd(text) {
   if (!text) return ''
@@ -666,8 +697,18 @@ function parseActTitle(content) {
   const m = content.match(/^(\w+)\(/)
   if (!m) return content.slice(0, 50)
   const toolNames = {
-    web_search: '🔍 Web 搜索', fetch_url: '🌐 抓取网页',
-    execute_bash: '💻 执行命令', read_file: '📄 读取文件', write_file: '✏️ 写入文件',
+    execute_bash: '💻 执行命令',
+    list_files: '📂 列出目录',
+    read_file_range: '📖 按行读取',
+    read_file: '📄 读取文件',
+    write_file: '✏️ 写入文件',
+    web_search: '🔍 Web 搜索',
+    fetch_url: '🌐 抓取网页',
+    search_code: '🔎 代码搜索',
+    apply_patch: '🧩 应用补丁',
+    get_git_diff: '📊 查看差异',
+    run_tests: '🧪 运行测试',
+    run_lint: '🔬 代码检查',
   }
   return toolNames[m[1]] || m[1]
 }
@@ -699,20 +740,47 @@ function parseCheckResult(content) {
   try { return JSON.parse(content) } catch { return { failed: false, reason: content } }
 }
 
-function parseFinalAnswer(raw) {
-  if (!raw) return { stepResults: '', stats: null }
-  const toolsMatch = raw.match(/Used tools: (.+)/)
-  const reflMatch = raw.match(/Reflections\/self-corrections: (\d+)/)
-  const statusMatch = raw.match(/Final status: (\w+)/)
-  const stepResultsMatch = raw.match(/Step results:\n([\s\S]*?)\n\nFinal status:/)
-  return {
-    stepResults: stepResultsMatch ? stepResultsMatch[1].trim() : raw,
-    stats: {
-      tools: toolsMatch ? toolsMatch[1] : null,
-      reflections: reflMatch ? parseInt(reflMatch[1]) : 0,
-      status: statusMatch ? statusMatch[1] : null,
-    },
+// ── 获取 observe 项对应的工具名 ──────────────────────────
+function getObserveToolName(traceItems, observeIndex) {
+  // 向前查找最近的 act 项
+  for (let i = observeIndex - 1; i >= 0; i--) {
+    const item = traceItems[i]
+    if (item.phase === 'act') {
+      const m = String(item.content || '').match(/^(\w+)\(/)
+      return m ? m[1] : ''
+    }
+    // 如果遇到 reason/planner 等，说明不属于同一工具调用
+    if (item.phase === 'reason' || item.phase === 'planner' || item.phase === 'finish_step') break
   }
+  return ''
+}
+
+// ── 提取 RAG 来源 ────────────────────────────────────────
+function extractRagSources(traceItem) {
+  const meta = traceItem?.meta || {}
+  if (meta.rag_sources && Array.isArray(meta.rag_sources)) return meta.rag_sources
+  // 也检查 content 中是否包含 rag_sources
+  try {
+    const obj = JSON.parse(traceItem?.content || '{}')
+    if (obj.rag_sources && Array.isArray(obj.rag_sources)) return obj.rag_sources
+  } catch { /* ignore */ }
+  return []
+}
+
+function cleanFinalAnswer(raw) {
+  if (!raw) return ''
+  // 提取 "Step results:" 到 "Final status:" 之间的内容
+  const stepMatch = raw.match(/Step results:\s*([\s\S]*?)\s*Final status:/)
+  if (stepMatch) {
+    return stepMatch[1].trim()
+  }
+  // 如果没有 "Step results:" 标记，尝试去掉元数据行后返回
+  // 去掉 "Overall task:" 到 "Latest verification:" 之间的元数据块
+  const cleaned = raw
+    .replace(/^Overall task:[\s\S]*?Latest verification:\s*\{[\s\S]*?\}\s*/m, '')
+    .replace(/Final status:\s*\S+\s*$/, '')
+    .trim()
+  return cleaned || raw.trim()
 }
 
 // ── 事件处理 ─────────────────────────────────────────────
