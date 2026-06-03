@@ -9,7 +9,14 @@ from agent.backend.database import get_connection
 AGENT_CONFIG_KEY = "agent_config"
 TOOL_SETTINGS_KEY = "tool_settings"
 SKILLS_KEY = "skills"
-DEFAULT_TOOL_NAMES = ("execute_bash", "read_file", "write_file", "web_search", "fetch_url")
+DEFAULT_TOOL_NAMES = (
+    "execute_bash",
+    "read_file",
+    "write_file",
+    "web_search",
+    "fetch_url",
+    "rag_search",
+)
 
 
 def _read_setting_value(key: str) -> str | None:

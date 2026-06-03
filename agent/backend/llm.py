@@ -15,10 +15,32 @@ load_dotenv()
 
 PLAN_MAX_STEPS = 20
 
-client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY"),
-    base_url=os.environ.get("OPENAI_BASE_URL")
-)
+_client: Optional[OpenAI] = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is not None:
+        return _client
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured. "
+            "Set the OPENAI_API_KEY environment variable before calling any LLM function."
+        )
+    _client = OpenAI(
+        api_key=api_key,
+        base_url=os.environ.get("OPENAI_BASE_URL")
+    )
+    return _client
+
+
+class _ClientProxy:
+    def __getattr__(self, name):
+        return getattr(_get_client(), name)
+
+
+client = _ClientProxy()
 
 
 def fallback_session_title(message: str) -> str:
@@ -34,7 +56,7 @@ def generate_session_title(message: str) -> str:
     if not (message or "").strip():
         return fallback
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=get_effective_model(),
             messages=[
                 {
@@ -58,8 +80,18 @@ def generate_session_title(message: str) -> str:
         return fallback
 
 
+def get_embeddings(texts: List[str]) -> List[List[float]]:
+    """调用 OpenAI 兼容的 Embedding API 对文本列表进行向量化（供 RAG 使用）。"""
+    from agent.backend.config import RAG_EMBEDDING_MODEL
+    response = _get_client().embeddings.create(
+        model=RAG_EMBEDDING_MODEL,
+        input=texts,
+    )
+    return [item.embedding for item in response.data]
+
+
 def llm_json(system_prompt: str, user_prompt: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    response = client.chat.completions.create(
+    response = _get_client().chat.completions.create(
         model=get_effective_model(),
         response_format={"type": "json_object"},
         messages=[

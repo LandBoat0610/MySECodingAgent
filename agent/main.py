@@ -1124,3 +1124,36 @@ def get_file_content(project_id: str, path: str):
         return FileContentResponse(path=path, content=content, size=size, encoding="utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=415, detail="文件非文本格式，无法预览")
+
+
+# ── RAG 知识增强 API ──────────────────────────────────
+@app.post("/rag/ingest")
+def rag_ingest(project_id: str):
+    """将项目工作区中的文档入库到知识库。"""
+    with get_connection() as conn:
+        proj = conn.execute(
+            "SELECT workspace_path FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if not proj:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+    from agent.backend.rag import auto_ingest_workspace
+    result = auto_ingest_workspace(proj["workspace_path"])
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message", "入库失败"))
+    return result
+
+
+@app.get("/rag/search")
+def rag_search_api(query: str, top_k: int = 5):
+    """直接搜索知识库（主要用于调试，Agent 通过 tool 调用 rag_search）。"""
+    from agent.backend.rag import rag_search
+    return rag_search(query, top_k)
+
+
+@app.get("/rag/stats")
+def rag_stats_api():
+    """返回知识库统计信息。"""
+    from agent.backend.rag import get_rag_stats
+    return get_rag_stats()

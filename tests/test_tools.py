@@ -264,6 +264,29 @@ class TestFetchUrl:
         assert "connection refused" in data["output"]
 
 
+class TestRagSearchTool:
+    def test_rag_search_success_wraps_sources_in_meta(self, monkeypatch):
+        from agent.backend import tools as tools_mod
+
+        def mock_backend_rag_search(query, top_k):
+            return {
+                "query": query,
+                "top_k": top_k,
+                "results": [
+                    {"content": "NEBULA_RAG_7319", "source": "README.md", "score": 0.9}
+                ],
+            }
+
+        monkeypatch.setattr("agent.backend.rag.rag_search", mock_backend_rag_search)
+        result_json = tools_mod.rag_search("internal code", top_k=3)
+        data = json.loads(result_json)
+
+        assert data["status"] == "success"
+        assert data["meta"]["rag_sources"][0]["source"] == "README.md"
+        output = json.loads(data["output"])
+        assert output["results"][0]["content"] == "NEBULA_RAG_7319"
+
+
 # ==================== Integration & Edge Cases ====================
 class TestEdgeCases:
     def test_execute_bash_with_unicode(self, sandbox_workspace):

@@ -62,3 +62,11 @@ BLOCKED_BASH_PATTERNS = [
 ]
 
 BASH_APPROVAL_REQUIRED = not os.environ.get("SKIP_BASH_APPROVAL", "").lower() in ("1", "true", "yes")
+
+# ── RAG 配置 ──
+RAG_STORE_DIR = os.environ.get("RAG_STORE_DIR", "rag_store")
+RAG_EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+RAG_DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "5"))
+RAG_CHUNK_SIZE = int(os.environ.get("RAG_CHUNK_SIZE", "500"))
+RAG_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "50"))
+RAG_COLLECTION_NAME = "agent_knowledge"
