@@ -728,7 +728,7 @@ def rag_search(query: str, top_k: int = 5) -> str:
             "success",
             json.dumps(result, ensure_ascii=False, indent=2),
             summary=f"RAG 检索'{query}': 返回{len(results)}条结果",
-            rag_sources=results,
+            meta={"rag_sources": results},
         )
     except ImportError:
         return tool_result("error", "RAG module not available (missing chromadb?)",

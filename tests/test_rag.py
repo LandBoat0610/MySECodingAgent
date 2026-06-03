@@ -2,8 +2,38 @@
 import json
 import os
 import tempfile
+import uuid
 
 import pytest
+
+
+class _FakeCollection:
+    def __init__(self):
+        self.documents = []
+        self.metadatas = []
+        self.ids = []
+
+    def count(self):
+        return len(self.documents)
+
+    def upsert(self, ids, embeddings, documents, metadatas):
+        for item_id, document, metadata in zip(ids, documents, metadatas):
+            if item_id in self.ids:
+                index = self.ids.index(item_id)
+                self.documents[index] = document
+                self.metadatas[index] = metadata
+            else:
+                self.ids.append(item_id)
+                self.documents.append(document)
+                self.metadatas.append(metadata)
+
+    def query(self, query_embeddings, n_results, include):
+        limit = min(n_results, len(self.documents))
+        return {
+            "documents": [self.documents[:limit]],
+            "metadatas": [self.metadatas[:limit]],
+            "distances": [[0.1 for _ in range(limit)]],
+        }
 
 # conftest.py 已设置环境变量和 sys.path
 
@@ -71,9 +101,14 @@ class TestChromaIntegration:
     def reset_rag_globals(self, tmp_path, monkeypatch):
         """每个测试用临时目录作为 RAG 存储，并重置全局客户端。"""
         import agent.backend.rag as rag_mod
-        monkeypatch.setattr(rag_mod, "_chroma_client", None)
-        monkeypatch.setattr(rag_mod, "_collection", None)
+        collection_name = f"test_rag_{uuid.uuid4().hex}"
+        fake_collection = _FakeCollection()
+        monkeypatch.setattr(rag_mod, "RAG_COLLECTION_NAME", collection_name)
         monkeypatch.setattr(rag_mod, "RAG_STORE_DIR", str(tmp_path / "rag_store"))
+        monkeypatch.setattr(rag_mod, "_get_collection", lambda: fake_collection)
+        rag_mod.reset_chroma_cache()
+        yield
+        rag_mod.reset_chroma_cache()
 
     def test_ingest_and_search(self, tmp_path, monkeypatch):
         """端到端测试：入库 → 检索（mock embedding）。"""
@@ -140,9 +175,14 @@ class TestAutoIngest:
     @pytest.fixture(autouse=True)
     def reset_rag_globals(self, tmp_path, monkeypatch):
         import agent.backend.rag as rag_mod
-        monkeypatch.setattr(rag_mod, "_chroma_client", None)
-        monkeypatch.setattr(rag_mod, "_collection", None)
+        collection_name = f"test_rag_{uuid.uuid4().hex}"
+        fake_collection = _FakeCollection()
+        monkeypatch.setattr(rag_mod, "RAG_COLLECTION_NAME", collection_name)
         monkeypatch.setattr(rag_mod, "RAG_STORE_DIR", str(tmp_path / "rag_store"))
+        monkeypatch.setattr(rag_mod, "_get_collection", lambda: fake_collection)
+        rag_mod.reset_chroma_cache()
+        yield
+        rag_mod.reset_chroma_cache()
 
     def test_auto_ingest_scans_workspace(self, tmp_path, monkeypatch):
         from agent.backend.rag import auto_ingest_workspace

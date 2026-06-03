@@ -214,6 +214,97 @@ def _build_retrieved_context(workspace_dir: str, relevant_files: List[str]) -> L
     return contexts
 
 
+def _legacy_mojibake_task_should_use_rag(task: str, step_task: str = "") -> bool:
+    text = f"{task or ''}\n{step_task or ''}".lower()
+    rag_markers = (
+        "rag_search",
+        "rag",
+        "knowledge base",
+        "project knowledge",
+        "internal docs",
+        "existing materials",
+        "readme",
+        "docs",
+        "release command",
+        "知识库",
+        "项目文档",
+        "已有资料",
+        "内部资料",
+        "内部代码",
+        "发布口令",
+        "发布命令",
+        "根据项目",
+        "根据知识",
+        "文档",
+    )
+    simple_math = re.fullmatch(
+        r"[\s\d\+\-\*/×xX÷\(\)\.，,。只返回直接计算calculate算一下请]+",
+        text,
+    )
+    return any(marker in text for marker in rag_markers) and not bool(simple_math)
+
+
+def _task_should_use_rag(task: str, step_task: str = "") -> bool:
+    text = f"{task or ''}\n{step_task or ''}".lower()
+    rag_markers = (
+        "rag_search",
+        "rag",
+        "knowledge base",
+        "project knowledge",
+        "internal docs",
+        "existing materials",
+        "readme",
+        "docs",
+        "release command",
+        "\u77e5\u8bc6\u5e93",        # 知识库
+        "\u9879\u76ee\u6587\u6863",  # 项目文档
+        "\u5df2\u6709\u8d44\u6599",  # 已有资料
+        "\u5185\u90e8\u8d44\u6599",  # 内部资料
+        "\u5185\u90e8\u4ee3\u7801",  # 内部代码
+        "\u53d1\u5e03\u53e3\u4ee4",  # 发布口令
+        "\u53d1\u5e03\u547d\u4ee4",  # 发布命令
+        "\u6839\u636e\u9879\u76ee",  # 根据项目
+        "\u6839\u636e\u77e5\u8bc6",  # 根据知识
+        "\u6587\u6863",              # 文档
+    )
+    simple_math = re.fullmatch(
+        r"[\s\d\+\-\*/\u00d7xX\u00f7\(\)\.,，。\u53ea\u8fd4\u56de"
+        r"\u76f4\u63a5\u8ba1\u7b97calculate\u7b97\u4e00\u4e0b\u8bf7]+",
+        text,
+    )
+    return any(marker in text for marker in rag_markers) and not bool(simple_math)
+
+
+def _append_rag_results_to_state(state: AgentState, parsed_result: Dict[str, Any]) -> None:
+    try:
+        payload = json.loads(parsed_result.get("output") or "{}")
+    except Exception:
+        payload = {}
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return
+
+    context = state.setdefault("retrieved_context", [])
+    if not isinstance(context, list):
+        context = []
+        state["retrieved_context"] = context
+    sources = state.setdefault("rag_sources", [])
+    if not isinstance(sources, list):
+        sources = []
+        state["rag_sources"] = sources
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            "source": item.get("source", "unknown"),
+            "content": item.get("content", ""),
+            "score": item.get("score"),
+        }
+        context.append(entry)
+        sources.append(entry)
+
+
 def _infer_test_commands(state: AgentState) -> List[str]:
     commands = []
     run_command = str(state.get("run_command") or "").strip()
@@ -537,6 +628,12 @@ def executor_node(state: AgentState) -> AgentState:
         f"Acceptance criteria:\n{criteria or '- Complete the user request accurately.'}\n\n"
         f"Codebase context:\n{context_summary or 'No context summary available.'}\n\n"
         f"Retrieved snippets:\n{safe_trim(retrieved_context, 2800) or 'No snippets available.'}\n\n"
+        f"RAG rules:\n"
+        f"- If the user explicitly asks to call rag_search, you must call rag_search before answering.\n"
+        f"- If the task asks to answer from the knowledge base, project documents, README/docs, internal materials, "
+        f"release commands, or existing project context, call rag_search first.\n"
+        f"- If rag_search returns no results, say that no matching knowledge-base content was found and do not invent facts.\n"
+        f"- For simple math or general tasks that do not depend on project knowledge, do not call rag_search.\n\n"
         f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
         f"For coding tasks, inspect relevant files before modifying them and verify the result when possible. "
         f"If the step is already done (e.g. the file already exists and works), "
@@ -554,6 +651,10 @@ def executor_node(state: AgentState) -> AgentState:
 
     iteration = 0
     current_iteration_limit = step_iteration_limit
+    should_force_initial_rag = (
+        _task_should_use_rag(state.get("task", ""), step_task)
+        and "rag_search" not in state.get("used_tools", [])
+    )
     while True:
         if iteration >= current_iteration_limit:
             if not session_id:
@@ -617,7 +718,11 @@ def executor_node(state: AgentState) -> AgentState:
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         iteration += 1
         try:
-            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
+            request_args = {"model": get_effective_model(), "messages": messages, "tools": tools}
+            if should_force_initial_rag:
+                request_args["tool_choice"] = {"type": "function", "function": {"name": "rag_search"}}
+                should_force_initial_rag = False
+            response = client.chat.completions.create(**request_args)
             record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
@@ -714,6 +819,8 @@ def executor_node(state: AgentState) -> AgentState:
                     "status": parsed_result.get("status"),
                     "summary": parsed_result.get("summary") or parsed_result.get("output"),
                 })
+            if function_name == "rag_search" and parsed_result.get("status") != "error":
+                _append_rag_results_to_state(state, parsed_result)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
             log_state(trace, "observe", result_text, session_id=session_id, state=state)
             state["last_tool_result"] = parsed_result

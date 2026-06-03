@@ -1,8 +1,29 @@
-import { defineConfig } from 'vite'
+import { createLogger, defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+
+const logger = createLogger()
+const originalError = logger.error
+const ignoredWsProxyErrors = [
+  'ws proxy error',
+  'ws proxy socket error',
+  'ECONNRESET',
+  'ECONNABORTED'
+]
+
+logger.error = (message, options) => {
+  const text = String(message || '')
+  if (
+    ignoredWsProxyErrors.some((pattern) => text.includes(pattern)) &&
+    (text.includes('ECONNRESET') || text.includes('ECONNABORTED'))
+  ) {
+    return
+  }
+  originalError.call(logger, message, options)
+}
 
 export default defineConfig({
   plugins: [vue()],
+  customLogger: logger,
   server: {
     port: 3000,
     proxy: {
