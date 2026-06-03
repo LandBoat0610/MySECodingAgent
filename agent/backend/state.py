@@ -45,3 +45,6 @@ class AgentState(TypedDict, total=False):
     modified_files: List[str]
     eval_mode: bool
     runtime_metrics: Dict[str, Any]
+    # RAG 知识增强
+    retrieved_context: str
+    rag_sources: List[Dict[str, Any]]

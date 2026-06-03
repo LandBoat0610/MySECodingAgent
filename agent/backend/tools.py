@@ -239,6 +239,26 @@ tools = [
                 "required": ["target"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_search",
+            "description": (
+                "在知识库中检索与查询相关的文档片段，返回内容、来源和相似度。"
+                "适用场景：查找任务书要求、README 说明、技术文档、部署配置、项目上下文等。"
+                "不适用：搜索代码内容（用 search_code）；搜索网络（用 web_search）。"
+                "注意：需要在知识库中已有文档才能检索，返回结果包含来源路径和相似度分数。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索查询文本"},
+                    "top_k": {"type": "integer", "description": "返回最相关的结果数量（默认 5）"}
+                },
+                "required": ["query"]
+            }
+        }
     }
 ]
 
@@ -690,6 +710,34 @@ def run_lint(target: str) -> str:
         return tool_result("error", str(e), summary=f"flake8 异常: {e}")
 
 
+def rag_search(query: str, top_k: int = 5) -> str:
+    """RAG 知识检索工具，供 Agent 调用。"""
+    try:
+        from agent.backend.rag import rag_search as _rag_search
+        result = _rag_search(query, top_k)
+        results = result.get("results", [])
+        error = result.get("error")
+        if error:
+            return tool_result("error", error, summary=f"RAG 检索失败: {error}",
+                               error_type="rag_error")
+        if not results:
+            return tool_result("success",
+                               json.dumps(result, ensure_ascii=False, indent=2),
+                               summary=f"RAG 检索'{query}': 无结果（知识库可能为空）")
+        return tool_result(
+            "success",
+            json.dumps(result, ensure_ascii=False, indent=2),
+            summary=f"RAG 检索'{query}': 返回{len(results)}条结果",
+            rag_sources=results,
+        )
+    except ImportError:
+        return tool_result("error", "RAG module not available (missing chromadb?)",
+                           error_type="missing_dependency", summary="RAG 模块不可用")
+    except Exception as e:
+        return tool_result("error", f"rag_search failed: {e}",
+                           error_type="rag_error", summary=f"RAG 检索异常: {e}")
+
+
 available_functions = {
     "execute_bash": execute_bash,
     "list_files": list_files,
@@ -703,4 +751,5 @@ available_functions = {
     "get_git_diff": get_git_diff,
     "run_tests": run_tests,
     "run_lint": run_lint,
+    "rag_search": rag_search,
 }
