@@ -58,7 +58,8 @@ describe('ProjectPanel.vue', () => {
         it('should show empty hint when no projects and not loading', () => {
             useAgentStore.mockReturnValue(createMockStore())
             const wrapper = mount(ProjectPanel)
-            expect(wrapper.find('.empty-hint').text()).toContain('No projects')
+            expect(wrapper.find('.empty-state').exists()).toBe(true)
+            expect(wrapper.find('.empty-title').text()).toContain('No projects')
         })
 
         it('should render project items', () => {
@@ -166,8 +167,9 @@ describe('ProjectPanel.vue', () => {
                 sessions: []
             }))
             const wrapper = mount(ProjectPanel)
-            const hints = wrapper.findAll('.empty-hint')
-            expect(hints.some(h => h.text().includes('No sessions'))).toBe(true)
+            const hints = wrapper.findAll('.empty-state')
+            expect(hints.length).toBeGreaterThanOrEqual(1)
+            expect(hints[hints.length - 1].find('.empty-title').text()).toContain('No sessions')
         })
 
         it('should render session items', () => {
@@ -266,7 +268,7 @@ describe('ProjectPanel.vue', () => {
             const mockStore = createMockStore({ error: 'Error!' })
             useAgentStore.mockReturnValue(mockStore)
             const wrapper = mount(ProjectPanel)
-            await wrapper.find('.error-banner .btn-icon').trigger('click')
+            await wrapper.find('.error-banner .error-dismiss').trigger('click')
             expect(mockStore.clearError).toHaveBeenCalled()
         })
     })

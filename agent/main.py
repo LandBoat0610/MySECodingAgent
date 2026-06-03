@@ -1,9 +1,13 @@
+# flake8: noqa: E402
 # main.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from agent.backend.utils import sync_workspace_file_back
 from agent.backend.graph import build_graph, run_manual_fallback
 from agent.backend.llm import fallback_session_title, generate_session_title
 import threading
-import os
 import uuid
 import json
 import asyncio
@@ -11,7 +15,6 @@ from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from dotenv import load_dotenv
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -54,15 +57,12 @@ from agent.backend.platform_settings import (
 )
 from agent.backend.eval_router import router as eval_router
 
-load_dotenv()
-
 
 @asynccontextmanager
 async def lifespan(app):
     init_db()
     yield
 
-load_dotenv()
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
 app.include_router(eval_router)
 
@@ -276,6 +276,20 @@ def create_session(project_id: str, req: SessionCreateRequest):
             "last_tool_result": {},
             "last_execution": {},
             "final_answer": "",
+            "task_type": "",
+            "task_difficulty": "",
+            "current_plan": [],
+            "acceptance_criteria": [],
+            "relevant_files": [],
+            "retrieved_context": [],
+            "codebase_summary": "",
+            "test_commands": [],
+            "tool_history": [],
+            "verification_results": [],
+            "patch_history": [],
+            "failure_reason": "",
+            "retry_count": 0,
+            "last_review": {},
             "original_target_path": "",
             "should_sync_back": False,
             "project_root": proj["workspace_path"],
@@ -488,6 +502,20 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         state["current_task"] = ""
         state["last_tool_result"] = {}
         state["last_execution"] = {}
+        state["task_type"] = ""
+        state["task_difficulty"] = ""
+        state["current_plan"] = []
+        state["acceptance_criteria"] = []
+        state["relevant_files"] = []
+        state["retrieved_context"] = []
+        state["codebase_summary"] = ""
+        state["test_commands"] = []
+        state["tool_history"] = []
+        state["verification_results"] = []
+        state["patch_history"] = []
+        state["failure_reason"] = ""
+        state["retry_count"] = 0
+        state["last_review"] = {}
         state["pending_tool_approval"] = None
         state["pending_loop_approval"] = None
         state["runtime_metrics"] = {

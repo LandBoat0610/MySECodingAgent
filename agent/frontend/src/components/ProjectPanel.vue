@@ -32,9 +32,12 @@
         </span>
         <button class="btn-delete" @click.stop="handleDeleteProject(project)" title="Delete">×</button>
       </div>
-      <div v-if="store.projects.length === 0 && !store.loading" class="empty-hint">
-        No projects. Create one above.
-      </div>
+      <EmptyState
+        v-if="store.projects.length === 0 && !store.loading"
+        icon="📁"
+        title="No projects"
+        desc="Create one above."
+      />
     </div>
 
     <div v-if="store.selectedProjectId" class="session-section">
@@ -86,12 +89,17 @@
             <button class="btn-mini danger" @click.stop="handleDeleteSession(session)" title="Delete">×</button>
           </div>
         </div>
-        <div v-if="store.sessions.length === 0" class="empty-hint">
-          No sessions. Send a message to start.
-        </div>
-        <div v-else-if="store.filteredSessions.length === 0" class="empty-hint">
-          No matching sessions.
-        </div>
+        <EmptyState
+          v-if="store.sessions.length === 0"
+          icon="💬"
+          title="No sessions"
+          desc="Create one above."
+        />
+        <EmptyState
+          v-else-if="store.filteredSessions.length === 0"
+          icon="🔍"
+          title="No matching sessions"
+        />
       </div>
     </div>
 
@@ -169,16 +177,18 @@
       </div>
     </div>
 
-    <div v-if="store.error" class="error-banner">
-      {{ store.error }}
-      <button class="btn-icon" @click="store.clearError()">×</button>
-    </div>
+    <ErrorBanner
+      :message="store.error"
+      @dismiss="store.clearError()"
+    />
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
+import { EmptyState, ErrorBanner } from './status/index.js'
+import { showConfirm } from '../composables/useConfirm.js'
 
 const store = useAgentStore()
 
@@ -212,7 +222,12 @@ async function handleCreateProject() {
 }
 
 async function handleDeleteProject(project) {
-  if (!confirm(`确定删除项目 "${project.name}"？此操作将删除该项目下的所有会话和数据，且不可恢复。`)) return
+  const ok = await showConfirm({
+    title: '删除项目',
+    message: `确定删除项目「${project.name}」？此操作将删除该项目下的所有会话和数据，且不可恢复。`,
+    variant: 'danger'
+  })
+  if (!ok) return
   try {
     await store.doDeleteProject(project.id)
   } catch (e) {
@@ -359,7 +374,7 @@ function formatDate(iso) {
 }
 
 .panel-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -436,13 +451,13 @@ function formatDate(iso) {
 .btn {
   padding: 6px 14px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
 }
 
 .btn-sm {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .btn-primary {
@@ -508,7 +523,7 @@ function formatDate(iso) {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -526,11 +541,11 @@ function formatDate(iso) {
 }
 
 .project-icon {
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .project-name {
-  font-size: 13px;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -596,7 +611,7 @@ function formatDate(iso) {
 }
 
 .session-title {
-  font-size: 13px;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -644,7 +659,7 @@ function formatDate(iso) {
 }
 
 .session-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -652,14 +667,14 @@ function formatDate(iso) {
   padding: 14px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .error-banner {
   padding: 8px 14px;
   background: var(--danger);
   color: #1e1e2e;
-  font-size: 12px;
+  font-size: 13px;
   display: flex;
   align-items: center;
   justify-content: space-between;

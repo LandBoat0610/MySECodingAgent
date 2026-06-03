@@ -368,4 +368,13 @@ describe('ChatPanel.vue', () => {
             expect(wrapper.find('.running-indicator').exists()).toBe(false)
         })
     })
+
+    // ---- 回到底部按钮 ----
+    describe('scroll-to-bottom button', () => {
+        it('should not show when at bottom (no messages)', () => {
+            useAgentStore.mockReturnValue(createMockStore())
+            const wrapper = mount(ChatPanel)
+            expect(wrapper.find('.scroll-bottom-btn').exists()).toBe(false)
+        })
+    })
 })

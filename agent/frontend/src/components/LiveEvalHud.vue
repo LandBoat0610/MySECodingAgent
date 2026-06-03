@@ -92,8 +92,9 @@ const toolRatePct = computed(() => {
 .live-eval-panel {
   width: 100%;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  font-size: 14px;
   color: var(--text-primary);
   overflow: hidden;
   flex: 0 0 auto;
@@ -114,7 +115,7 @@ const toolRatePct = computed(() => {
   border: none;
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -132,9 +133,8 @@ const toolRatePct = computed(() => {
 }
 
 .panel-chevron {
-  width: 10px;
   font-size: 11px;
-  color: var(--text-muted);
+  opacity: 0.75;
 }
 
 .panel-body {
@@ -169,12 +169,12 @@ const toolRatePct = computed(() => {
 
 .mono {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .panel-hint {
   margin-top: 8px;
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-muted);
 }

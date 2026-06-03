@@ -2,11 +2,28 @@
  * components/FileTreeNode.test.js
  * 测试文件树节点组件：展开/折叠、文件选择事件
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { ref } from 'vue'
 import FileTreeNode from '../../components/FileTreeNode.vue'
 
+const mockPaths = ref(new Set())
+
+vi.mock('../../composables/useExpandedDirs.js', () => ({
+    useExpandedDirs: () => ({
+        isExpanded: (path) => mockPaths.value.has(path),
+        toggle: (path) => {
+            const next = new Set(mockPaths.value)
+            next.has(path) ? next.delete(path) : next.add(path)
+            mockPaths.value = next
+        }
+    })
+}))
+
 describe('FileTreeNode.vue', () => {
+    beforeEach(() => {
+        mockPaths.value = new Set()
+    })
     // ---- directory node ----
     describe('directory node', () => {
         const dirNode = {

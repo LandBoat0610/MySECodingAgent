@@ -32,13 +32,15 @@ describe('FileTreePanel.vue', () => {
     it('should show empty hint when no project selected', () => {
         useAgentStore.mockReturnValue(createMockStore())
         const wrapper = mount(FileTreePanel)
-        expect(wrapper.find('.empty-hint').text()).toContain('Select a project')
+        expect(wrapper.find('.empty-state').exists()).toBe(true)
+        expect(wrapper.find('.empty-title').text()).toContain('Select a project')
     })
 
     it('should show empty hint when fileTree is empty', () => {
         useAgentStore.mockReturnValue(createMockStore({ selectedProjectId: 'p1', fileTree: [] }))
         const wrapper = mount(FileTreePanel)
-        expect(wrapper.find('.empty-hint').text()).toContain('No files')
+        expect(wrapper.find('.empty-state').exists()).toBe(true)
+        expect(wrapper.find('.empty-title').text()).toContain('No files')
     })
 
     it('should render FileTreeNode for each tree item', () => {

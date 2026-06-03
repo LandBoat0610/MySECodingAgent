@@ -1,5 +1,5 @@
 <template>
-  <div class="plan-dialog">
+  <div class="plan-dialog" @keydown.escape="handleAction('skip')">
     <div class="plan-dialog-header">
       <span>📋 执行计划</span>
       <span class="plan-count">共 {{ store.pendingPlans.length }} 步待确认</span>
@@ -143,13 +143,13 @@ function formatDate(iso) {
   justify-content: space-between;
   padding: 10px 14px;
   background: rgba(137, 220, 235, 0.1);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   border-bottom: 1px solid rgba(137, 220, 235, 0.15);
 }
 
 .plan-count {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-muted);
 }
@@ -188,7 +188,7 @@ function formatDate(iso) {
 .plan-item-body { flex: 1; min-width: 0; }
 
 .plan-item-content {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.4;
 }
 
@@ -196,7 +196,7 @@ function formatDate(iso) {
   display: flex;
   align-items: center;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -207,7 +207,7 @@ function formatDate(iso) {
 
 .plan-prompt {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
@@ -222,7 +222,7 @@ function formatDate(iso) {
   flex: 1 1 120px;
   padding: 7px 0;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   display: flex;
   align-items: center;

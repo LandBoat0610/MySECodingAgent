@@ -1,8 +1,10 @@
 # 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
-import traceback
+import os
+import re
 import uuid
-from typing import Any, Dict, List
+import traceback
+from typing import Any, Dict, List, Optional
 
 try:
     from langgraph.graph import StateGraph, END
@@ -24,10 +26,21 @@ from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
-from agent.backend.platform_settings import get_tool_settings, is_tool_enabled
 
 import time
 from agent.backend.database import get_connection
+
+
+TEXT_FILE_EXTENSIONS = (
+    ".py", ".js", ".ts", ".tsx", ".vue", ".json", ".md", ".txt",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".html", ".css",
+    ".scss", ".sh", ".bat", ".sql",
+)
+
+IGNORED_CONTEXT_DIRS = {
+    ".git", ".venv", "venv", "node_modules", "dist", "build",
+    "__pycache__", ".pytest_cache", ".mypy_cache", "agent/eval_storage",
+}
 
 
 def wait_for_plan_approval(session_id: str) -> str:
@@ -57,82 +70,167 @@ def wait_for_plan_approval(session_id: str) -> str:
     return "timeout"
 
 
-def wait_for_tool_approval(session_id: str, approval_id: str) -> Dict[str, Any]:
-    timeout = 300
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
-                (session_id,)
-            ).fetchone()
-
-        if row:
-            if row["status"] == "stopped":
-                return {"status": "stopped", "feedback": ""}
-            try:
-                snapshot = json.loads(row["state_snapshot"] or "{}")
-            except json.JSONDecodeError:
-                snapshot = {}
-            pending = snapshot.get("pending_tool_approval") or {}
-            if pending.get("id") == approval_id:
-                status = pending.get("status")
-                if status in ("approved", "rejected", "revision_requested"):
-                    return {"status": status, "feedback": pending.get("feedback") or ""}
-
-        time.sleep(0.5)
-
-    return {"status": "timeout", "feedback": ""}
+def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
+    normalized = []
+    for idx, step in enumerate(steps or [], 1):
+        if isinstance(step, dict):
+            goal = str(step.get("goal") or step.get("description") or step.get("step") or "").strip()
+            action = str(step.get("action") or "execute").strip()
+            verification = str(step.get("verification") or step.get("expected_result") or "").strip()
+            files = step.get("files_to_inspect") or step.get("files") or []
+            if isinstance(files, str):
+                files = [files]
+        else:
+            goal = str(step or "").strip()
+            action = "execute"
+            verification = ""
+            files = []
+        normalized.append({
+            "id": idx,
+            "goal": goal or f"完成第 {idx} 个步骤",
+            "action": action,
+            "files_to_inspect": files if isinstance(files, list) else [],
+            "verification": verification,
+            "status": "pending",
+        })
+    return normalized
 
 
-def wait_for_loop_approval(session_id: str, approval_id: str) -> str:
-    timeout = 300
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
-                (session_id,)
-            ).fetchone()
-
-        if row:
-            if row["status"] == "stopped":
-                return "stopped"
-            try:
-                snapshot = json.loads(row["state_snapshot"] or "{}")
-            except json.JSONDecodeError:
-                snapshot = {}
-            pending = snapshot.get("pending_loop_approval") or {}
-            if pending.get("id") == approval_id:
-                status = pending.get("status")
-                if status in ("continued", "stopped"):
-                    return status
-
-        time.sleep(0.5)
-
-    return "timeout"
+def _classify_task_type(task: str) -> str:
+    text = (task or "").lower()
+    if any(k in text for k in ("测试", "pytest", "test", "失败", "报错", "error", "bug", "修复", "fix")):
+        return "bug_fix"
+    if any(k in text for k in ("新增", "添加", "实现", "feature", "add", "create")):
+        return "feature"
+    if any(k in text for k in ("解释", "说明", "怎么", "如何", "review", "检查")):
+        return "analysis"
+    return "coding"
 
 
-def _refresh_plan_feedback(state: AgentState) -> None:
-    session_id = state.get("session_id")
-    if not session_id:
-        return
+def _infer_acceptance_criteria(state: AgentState) -> List[str]:
+    criteria = []
+    task_type = state.get("task_type", "coding")
+    if task_type == "analysis":
+        criteria.append("回答覆盖用户问题并指出关键代码位置。")
+    else:
+        criteria.extend([
+            "修改范围与用户需求一致，避免无关改动。",
+            "关键工具调用成功或失败原因已解释。",
+        ])
+    if state.get("run_command"):
+        criteria.append(f"可通过验证命令检查结果: {state.get('run_command')}")
+    if state.get("target_file"):
+        criteria.append(f"主要目标文件已检查: {state.get('target_file')}")
+    return criteria
+
+
+def _safe_relpath(path: str, root: str) -> str:
     try:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT state_snapshot FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if not row:
-            return
-        snapshot = json.loads(row["state_snapshot"] or "{}")
-        feedback = snapshot.get("plan_feedback", "")
-        if feedback:
-            state["plan_feedback"] = feedback
+        return os.path.relpath(path, root).replace("\\", "/")
     except Exception:
-        return
+        return path.replace("\\", "/")
+
+
+def _is_ignored_context_path(rel_path: str) -> bool:
+    parts = set(rel_path.replace("\\", "/").split("/"))
+    return any(ignored in parts or rel_path.startswith(ignored + "/") for ignored in IGNORED_CONTEXT_DIRS)
+
+
+def _collect_workspace_files(workspace_dir: str, limit: int = 120) -> List[str]:
+    files: List[str] = []
+    try:
+        for root, dirs, names in os.walk(workspace_dir):
+            rel_root = _safe_relpath(root, workspace_dir)
+            dirs[:] = [
+                d for d in dirs
+                if not _is_ignored_context_path(d)
+                and not _is_ignored_context_path(f"{rel_root}/{d}".strip("./"))
+            ]
+            for name in names:
+                rel = _safe_relpath(os.path.join(root, name), workspace_dir)
+                if _is_ignored_context_path(rel):
+                    continue
+                if name.endswith(TEXT_FILE_EXTENSIONS):
+                    files.append(rel)
+                if len(files) >= limit:
+                    return files
+    except Exception:
+        return files
+    return files
+
+
+def _extract_task_keywords(task: str) -> List[str]:
+    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", task or "")
+    stop = {"帮我", "完成", "修改", "现在", "这个", "那个", "项目", "代码", "功能", "如何", "怎么"}
+    keywords = []
+    for word in words:
+        if word in stop:
+            continue
+        if word not in keywords:
+            keywords.append(word)
+        if len(keywords) >= 8:
+            break
+    return keywords
+
+
+def _find_relevant_files(workspace_dir: str, task: str, target_file: str = "") -> List[str]:
+    files = _collect_workspace_files(workspace_dir)
+    relevant: List[str] = []
+    if target_file:
+        relevant.append(target_file)
+    keywords = _extract_task_keywords(task)
+    for rel in files:
+        basename = os.path.basename(rel).lower()
+        if any(k.lower() in basename for k in keywords):
+            relevant.append(rel)
+    if len(relevant) < 8 and keywords:
+        for rel in files:
+            if rel in relevant:
+                continue
+            path = os.path.join(workspace_dir, rel)
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    sample = f.read(4000)
+                if any(re.search(re.escape(k), sample, re.I) for k in keywords):
+                    relevant.append(rel)
+            except Exception:
+                continue
+            if len(relevant) >= 8:
+                break
+    seen = set()
+    return [f for f in relevant if not (f in seen or seen.add(f))][:8]
+
+
+def _build_retrieved_context(workspace_dir: str, relevant_files: List[str]) -> List[Dict[str, Any]]:
+    contexts = []
+    for rel in relevant_files[:5]:
+        try:
+            path = os.path.join(workspace_dir, rel)
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = safe_trim(f.read(), 1800)
+            contexts.append({"source": rel, "content": content})
+        except Exception as e:
+            contexts.append({"source": rel, "error": str(e)})
+    return contexts
+
+
+def _infer_test_commands(state: AgentState) -> List[str]:
+    commands = []
+    run_command = str(state.get("run_command") or "").strip()
+    if run_command:
+        commands.append(run_command)
+    workspace_dir = state.get("workspace_dir", "")
+    try:
+        has_pytest_config = os.path.exists(os.path.join(workspace_dir, "pytest.ini"))
+        has_tests_dir = os.path.isdir(os.path.join(workspace_dir, "tests"))
+        if has_pytest_config or has_tests_dir:
+            commands.append("pytest -q")
+        if os.path.exists(os.path.join(workspace_dir, "agent", "frontend", "package.json")):
+            commands.append("cd agent/frontend && npm run test")
+    except Exception:
+        pass
+    seen = set()
+    return [cmd for cmd in commands if not (cmd in seen or seen.add(cmd))][:4]
 
 
 def planner_node(state: AgentState) -> AgentState:
@@ -143,13 +241,10 @@ def planner_node(state: AgentState) -> AgentState:
         return state
 
     steps = create_plan(state["task"], state.get("memory", ""), trace, state)
-    if _check_cancel(state):
-        return state
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
-    if _check_cancel(state):
-        return state
 
     state["task_list"] = steps
+    state["current_plan"] = _normalize_step_objects(steps)
     state["current_task_index"] = 0
     state["current_task"] = steps[0] if steps else state["task"]
     state["target_file"] = targets["target_file"]
@@ -165,9 +260,9 @@ def planner_node(state: AgentState) -> AgentState:
                 for step in steps:
                     conn.execute(
                         "INSERT INTO plans "
-                        "(id, session_id, project_id, round_id, content, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (uuid.uuid4().hex[:8], session_id, state["project_id"], state.get("current_round_id", ""),
+                        "(id, session_id, project_id, content, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex[:8], session_id, state["project_id"],
                          step, "pending", datetime.now().isoformat())
                     )
         except Exception as e:
@@ -190,14 +285,10 @@ def planner_node(state: AgentState) -> AgentState:
             state["status"] = "running"
             update_session_state(session_id, state, status="running")
             log_state(trace, "planner", "用户要求再优化，重新生成计划...", session_id=session_id, state=state)
-            _refresh_plan_feedback(state)
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
-            if _check_cancel(state):
-                return state
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
-            if _check_cancel(state):
-                return state
             state["task_list"] = steps
+            state["current_plan"] = _normalize_step_objects(steps)
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
             state["target_file"] = targets["target_file"]
@@ -212,17 +303,10 @@ def planner_node(state: AgentState) -> AgentState:
                         for step in steps:
                             conn.execute(
                                 "INSERT INTO plans "
-                                "(id, session_id, project_id, round_id, content, status, created_at) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                (
-                                    uuid.uuid4().hex[:8],
-                                    session_id,
-                                    state["project_id"],
-                                    state.get("current_round_id", ""),
-                                    step,
-                                    "pending",
-                                    datetime.now().isoformat(),
-                                )
+                                "(id, session_id, project_id, content, status, created_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (uuid.uuid4().hex[:8], session_id, state["project_id"],
+                                 step, "pending", datetime.now().isoformat())
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")
@@ -246,22 +330,69 @@ def planner_node(state: AgentState) -> AgentState:
     return state
 
 
+def context_builder_node(state: AgentState) -> AgentState:
+    if state.get("status") == "stopped":
+        return state
+    if _check_cancel(state):
+        return state
+
+    trace = state["trace"]
+    session_id = state.get("session_id")
+    workspace_dir = state["workspace_dir"]
+    task = state.get("task", "")
+
+    task_type = state.get("task_type") or _classify_task_type(task)
+    state["task_type"] = task_type
+    state["current_plan"] = state.get("current_plan") or _normalize_step_objects(state.get("task_list", []))
+    if state["current_plan"]:
+        current_idx = state.get("current_task_index", 0) + 1
+        for step in state["current_plan"]:
+            if isinstance(step, dict) and step.get("id") == current_idx and step.get("status") == "pending":
+                step["status"] = "current"
+
+    relevant_files = _find_relevant_files(workspace_dir, task, state.get("target_file", ""))
+    state["relevant_files"] = relevant_files
+    state["retrieved_context"] = _build_retrieved_context(workspace_dir, relevant_files)
+    state["acceptance_criteria"] = state.get("acceptance_criteria") or _infer_acceptance_criteria(state)
+    state["test_commands"] = state.get("test_commands") or _infer_test_commands(state)
+    state.setdefault("tool_history", [])
+    state.setdefault("verification_results", [])
+    state.setdefault("patch_history", [])
+    state.setdefault("retry_count", 0)
+    state.setdefault("failure_reason", "")
+
+    workspace_files = _collect_workspace_files(workspace_dir, limit=40)
+    state["codebase_summary"] = (
+        f"Task type: {task_type}\n"
+        f"Relevant files: {', '.join(relevant_files) if relevant_files else 'not found'}\n"
+        f"Candidate test commands: {', '.join(state.get('test_commands', [])) or 'none'}\n"
+        f"Workspace sample files: {', '.join(workspace_files[:20])}"
+    )
+
+    log_payload = {
+        "task_type": task_type,
+        "relevant_files": relevant_files,
+        "test_commands": state.get("test_commands", []),
+        "acceptance_criteria": state.get("acceptance_criteria", []),
+    }
+    log_state(
+        trace,
+        "context_builder",
+        json.dumps(log_payload, ensure_ascii=False),
+        session_id=session_id,
+        state=state,
+    )
+    if session_id:
+        from agent.backend.utils import update_session_state
+        update_session_state(session_id, state)
+    return state
+
+
 def _check_cancel(state: AgentState) -> bool:
     cancel_event = state.get("_cancel_event")
-    session_id = state.get("session_id")
-    cancelled = bool(cancel_event and cancel_event.is_set())
-    if not cancelled and session_id:
-        try:
-            with get_connection() as conn:
-                row = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
-                cancelled = bool(row and row["status"] == "stopped")
-        except Exception:
-            cancelled = False
-
-    if cancelled:
-        if cancel_event:
-            cancel_event.set()
+    if cancel_event and cancel_event.is_set():
         state["status"] = "stopped"
+        session_id = state.get("session_id")
         trace = state.get("trace", [])
         if session_id:
             from agent.backend.utils import update_session_state
@@ -271,6 +402,112 @@ def _check_cancel(state: AgentState) -> bool:
             _log(trace, "cancelled", "Agent execution cancelled by user", session_id=session_id, state=state)
         return True
     return False
+
+
+def _await_bash_approval(session_id: str, function_args: Dict[str, Any], state: AgentState) -> Optional[str]:
+    from agent.backend.utils import update_session_state, tool_result
+    from agent.backend.database import get_connection
+    from agent.backend.config import BLOCKED_BASH_PATTERNS as _BLOCKED
+
+    command = function_args.get("command", "")
+    if not command.strip():
+        return tool_result("error", "Empty bash command", error_type="validation")
+
+    risk_level = "low"
+    if any(re.search(p, command) for p in _BLOCKED):
+        risk_level = "high"
+
+    approval_id = uuid.uuid4().hex[:10]
+    purpose = state.get("current_task", "") or "执行命令"
+
+    pending = {
+        "id": approval_id,
+        "tool": "execute_bash",
+        "command": command,
+        "purpose": purpose,
+        "risk_level": risk_level,
+        "status": "pending",
+        "feedback": "",
+    }
+    state["pending_tool_approval"] = pending
+    state["status"] = "awaiting_tool_approval"
+
+    trace = state.get("trace", [])
+    log_state(trace, "tool_approval", f"等待确认: {command}",
+              meta={"pending_tool_approval": pending}, session_id=session_id, state=state)
+    update_session_state(session_id, state, status="awaiting_tool_approval")
+
+    timeout = 60
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        time.sleep(2)
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_snapshot FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                continue
+            snap = json.loads(row["state_snapshot"] or "{}")
+            pending_now = snap.get("pending_tool_approval") or {}
+            st = pending_now.get("status", "")
+
+            if st == "approved":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户已确认,执行命令", session_id=session_id, state=state)
+                return None
+            if st == "rejected":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", "用户拒绝,跳过命令", session_id=session_id, state=state)
+                msg = f"用户拒绝: {command}"
+                if feedback:
+                    msg += f" ({feedback})"
+                return tool_result("error", msg, error_type="rejected", summary=msg)
+            if st == "revision_requested":
+                feedback = pending_now.get("feedback", "")
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="running")
+                log_state(trace, "bash_approval", f"用户要求修改: {feedback}", session_id=session_id, state=state)
+                return tool_result("error", f"用户要求修改: {feedback}", error_type="revision_requested",
+                                   summary=f"用户要求修改: {feedback}")
+            if st == "stopped":
+                state.pop("pending_tool_approval", None)
+                update_session_state(session_id, state, status="stopped")
+                return tool_result("error", "Session stopped", error_type="stopped", summary="会话已终止")
+
+    state.pop("pending_tool_approval", None)
+    update_session_state(session_id, state, status="running")
+    log_state(trace, "bash_approval", "确认超时,跳过命令", session_id=session_id, state=state)
+    return tool_result("error", f"Approval timeout for command: {command}", error_type="timeout",
+                       summary=f"命令确认超时: {command}")
+
+
+def wait_for_loop_approval(session_id: str, approval_id: str) -> str:
+    from agent.backend.database import get_connection
+    timeout = 300
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT status, state_snapshot FROM sessions WHERE id = ?",
+                (session_id,)
+            ).fetchone()
+        if row:
+            if row["status"] == "stopped":
+                return "stopped"
+            try:
+                snapshot = json.loads(row["state_snapshot"] or "{}")
+            except json.JSONDecodeError:
+                snapshot = {}
+            pending = snapshot.get("pending_loop_approval") or {}
+            if pending.get("id") == approval_id:
+                status = pending.get("status")
+                if status in ("continued", "stopped"):
+                    return status
+        time.sleep(0.5)
+    return "timeout"
 
 
 def executor_node(state: AgentState) -> AgentState:
@@ -285,14 +522,23 @@ def executor_node(state: AgentState) -> AgentState:
     step_task = state.get("current_task", state["task"])
     system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
-    tools_module.CURRENT_CANCEL_EVENT = state.get("_cancel_event")
-    enabled_tools = get_tool_settings()
-    active_tools = [tool for tool in tools if enabled_tools.get(tool["function"]["name"], True)]
 
     messages.append({"role": "system", "content": system_prompt})
+    context_summary = safe_trim(state.get("codebase_summary", ""), 1600)
+    retrieved_context = "\n\n".join(
+        f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
+        for item in state.get("retrieved_context", [])[:4]
+        if isinstance(item, dict)
+    )
+    criteria = "\n".join(f"- {item}" for item in state.get("acceptance_criteria", [])[:6])
     step_context = (
         f"Current step: {step_task}\n\n"
+        f"Task type: {state.get('task_type', 'coding')}\n\n"
+        f"Acceptance criteria:\n{criteria or '- Complete the user request accurately.'}\n\n"
+        f"Codebase context:\n{context_summary or 'No context summary available.'}\n\n"
+        f"Retrieved snippets:\n{safe_trim(retrieved_context, 2800) or 'No snippets available.'}\n\n"
         f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
+        f"For coding tasks, inspect relevant files before modifying them and verify the result when possible. "
         f"If the step is already done (e.g. the file already exists and works), "
         f"just respond with a brief summary without calling any tools. "
         f"Do NOT create extra files or do extra work beyond this step. "
@@ -328,7 +574,7 @@ def executor_node(state: AgentState) -> AgentState:
                 "continue_approval",
                 (
                     f"当前步骤已达到 {current_iteration_limit} 轮工具调用上限。"
-                    f"如需继续处理步骤“{step_task}”，请确认继续。"
+                    f"如需继续处理步骤 [{step_task}]，请确认继续。"
                 ),
                 session_id=session_id,
                 state=state,
@@ -371,19 +617,14 @@ def executor_node(state: AgentState) -> AgentState:
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         iteration += 1
         try:
-            kwargs = {"model": get_effective_model(), "messages": messages}
-            if active_tools:
-                kwargs["tools"] = active_tools
-            response = client.chat.completions.create(**kwargs)
+            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
             record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
             state.setdefault("errors", []).append(state["last_tool_result"])
             if session_id:
                 from agent.backend.utils import update_session_state
-            update_session_state(session_id, state)
-            return state
-        if _check_cancel(state):
+                update_session_state(session_id, state)
             return state
 
         message = response.choices[0].message
@@ -410,8 +651,6 @@ def executor_node(state: AgentState) -> AgentState:
             return state
 
         for tool_call in message.tool_calls:
-            if _check_cancel(state):
-                return state
             function_payload = getattr(tool_call, "function", None)
             if function_payload is None:
                 continue
@@ -419,14 +658,7 @@ def executor_node(state: AgentState) -> AgentState:
             function_name = str(getattr(function_payload, "name", ""))
             raw_arguments = str(getattr(function_payload, "arguments", ""))
             function_args = parse_tool_arguments(raw_arguments)
-            log_state(
-                trace,
-                "act",
-                f"{function_name}({function_args})",
-                meta={"tool": function_name, "args": function_args},
-                session_id=session_id,
-                state=state,
-            )
+            log_state(trace, "act", f"{function_name}({function_args})", session_id=session_id, state=state)
 
             # 如果工具是写文件，就把它的路径记录下来
             if function_name == "write_file" and "path" in function_args:
@@ -438,106 +670,23 @@ def executor_node(state: AgentState) -> AgentState:
                 record_tool_call(state, function_name, False, 0.0)
             else:
                 func = available_functions.get(function_name)
-                if not is_tool_enabled(function_name):
-                    result_text = tool_result("error", f"Tool disabled: {function_name}")
-                    parsed_result = parse_json_object(result_text)
-                    record_tool_call(state, function_name, False, 0.0)
-                elif func is None:
+                if func is None:
                     result_text = tool_result("error", f"Unknown tool: {function_name}")
                     parsed_result = parse_json_object(result_text)
                     record_tool_call(state, function_name, False, 0.0)
                 else:
-                    if _check_cancel(state):
-                        return state
                     t0 = time.monotonic()
                     try:
-                        if function_name == "execute_bash" and session_id:
-                            approval_id = uuid.uuid4().hex[:8]
-                            command = str(function_args.get("command") or "")
-                            purpose = str(function_args.get("purpose") or "").strip()
-                            if not purpose:
-                                purpose = "Agent 请求执行该命令以完成当前步骤。"
-                            state["pending_tool_approval"] = {
-                                "id": approval_id,
-                                "tool": function_name,
-                                "command": command,
-                                "purpose": purpose,
-                                "status": "pending",
-                            }
-                            state["status"] = "awaiting_tool_approval"
-                            log_state(
-                                trace,
-                                "tool_approval",
-                                f"等待用户确认命令: {command}\n作用: {purpose}",
-                                meta={"pending_tool_approval": state["pending_tool_approval"]},
-                                session_id=session_id,
-                                state=state,
-                            )
-                            approval = wait_for_tool_approval(session_id, approval_id)
-                            approval_result = approval.get("status", "timeout")
-                            approval_feedback = str(approval.get("feedback") or "").strip()
-                            if approval_result == "approved":
-                                state["status"] = "running"
-                                state["pending_tool_approval"]["status"] = "approved"
-                                log_state(
-                                    trace,
-                                    "tool_approval",
-                                    "用户已确认，开始执行命令。",
-                                    session_id=session_id,
-                                    state=state,
-                                )
-                                result_text = func(**function_args)
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "rejected":
-                                state["status"] = "running"
-                                output = (
-                                    "User rejected this command before execution. "
-                                    f"Command was not executed: {command}\n"
-                                    "React to this feedback: choose a safer/different command, "
-                                    "explain why no command is needed, "
-                                    "or skip the command if appropriate."
-                                )
-                                if approval_feedback:
-                                    output += f"\nUser feedback: {approval_feedback}"
-                                result_text = tool_result(
-                                    "success",
-                                    output,
-                                    returncode=0,
-                                    meta={"executed": False, "rejected": True, "feedback": approval_feedback},
-                                )
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "revision_requested":
-                                state["status"] = "running"
-                                result_text = tool_result(
-                                    "success",
-                                    (
-                                        "User requested changes to the command before execution. "
-                                        f"Original command was not executed: {command}\n"
-                                        "User modification request: "
-                                        f"{approval_feedback or 'No specific suggestion provided.'}\n"
-                                        "React to this feedback by proposing a revised "
-                                        "execute_bash command with a clear purpose, "
-                                        "or skip command execution if it is no longer necessary."
-                                    ),
-                                    returncode=0,
-                                    meta={
-                                        "executed": False,
-                                        "revision_requested": True,
-                                        "feedback": approval_feedback,
-                                    },
-                                )
-                                state["pending_tool_approval"] = None
-                            elif approval_result == "stopped":
-                                state["status"] = "stopped"
-                                result_text = tool_result("error", "Command approval stopped by user", returncode=130)
+                        if function_name == "execute_bash":
+                            from agent.backend.config import BASH_APPROVAL_REQUIRED
+                            if BASH_APPROVAL_REQUIRED and session_id and "_approved" not in function_args:
+                                result_text = _await_bash_approval(session_id, function_args, state)
+                                if result_text is not None:
+                                    pass
+                                else:
+                                    result_text = func(**function_args)
                             else:
-                                state["status"] = "running"
-                                result_text = tool_result(
-                                    "error",
-                                    f"Command approval timed out: {command}",
-                                    returncode=124,
-                                )
-                                state["pending_tool_approval"] = None
+                                result_text = func(**function_args)
                         else:
                             result_text = func(**function_args)
                     except Exception as e:
@@ -546,11 +695,25 @@ def executor_node(state: AgentState) -> AgentState:
                     parsed_result = parse_json_object(result_text)
                     ok = parsed_result.get("status") != "error"
                     record_tool_call(state, function_name, ok, elapsed_ms)
-                    if _check_cancel(state):
-                        return state
 
             action_log.append({"tool": function_name, "args": function_args, "result": parsed_result})
+            state.setdefault("tool_history", []).append({
+                "step_index": state.get("current_task_index", 0),
+                "step": step_task,
+                "tool": function_name,
+                "args": function_args,
+                "result": parsed_result,
+            })
             state.setdefault("used_tools", []).append(function_name)
+            for modified in parsed_result.get("modified_files") or []:
+                if modified not in state.setdefault("modified_files", []):
+                    state["modified_files"].append(modified)
+            if function_name == "apply_patch":
+                state.setdefault("patch_history", []).append({
+                    "target": function_args.get("target"),
+                    "status": parsed_result.get("status"),
+                    "summary": parsed_result.get("summary") or parsed_result.get("output"),
+                })
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
             log_state(trace, "observe", result_text, session_id=session_id, state=state)
             state["last_tool_result"] = parsed_result
@@ -571,11 +734,7 @@ def executor_node(state: AgentState) -> AgentState:
 
     state["last_tool_result"] = {
         "status": "error",
-        "output": (
-            "Max iterations reached before step completion. "
-            f"limit={current_iteration_limit}, "
-            f"difficulty={state.get('task_difficulty', 'unknown')}"
-        ),
+        "output": "Max iterations reached before step completion.",
         "returncode": None,
         "action_log": action_log,
     }
@@ -586,7 +745,7 @@ def executor_node(state: AgentState) -> AgentState:
     return state
 
 
-def check_result_node(state: AgentState) -> AgentState:
+def verifier_node(state: AgentState) -> AgentState:
     if state.get("status") == "stopped":
         return state
     if _check_cancel(state):
@@ -595,6 +754,7 @@ def check_result_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id")
     result = state.get("last_tool_result", {}) or {}
     execution = state.get("last_execution", {}) or {}
+    tool_history = state.get("tool_history", []) or []
 
     result_output = str(result.get("output") or "")
     execution_output = str(execution.get("output") or "")
@@ -613,30 +773,75 @@ def check_result_node(state: AgentState) -> AgentState:
     ]
 
     failed = False
-    reason = "Result passed basic checks"
+    reason = "Result passed verifier checks"
+    evidence: List[str] = []
 
     if execution:
         if isinstance(returncode, int) and returncode != 0:
             failed = True
             reason = "Execution returned non-zero exit code"
+            evidence.append(f"returncode={returncode}")
+        elif result.get("status") == "error":
+            failed = True
+            reason = f"Execution failed: {result.get('error_type') or result.get('summary', 'unknown error')}"
+            evidence.append(str(result.get("summary") or result.get("output") or ""))
         elif any(token in stderr_text for token in error_signals):
             failed = True
             reason = "Execution stderr contains real error signals"
+            evidence.append(safe_trim(execution_output, 500))
         else:
             failed = False
             reason = "Execution succeeded"
+            evidence.append("last execution succeeded")
     else:
         if result.get("status") == "error":
             failed = True
-            reason = "Last tool returned error status"
+            error_label = result.get("error_type") or result.get("summary") or "unknown"
+            reason = f"Last tool returned error status: {error_label}"
+            evidence.append(str(result.get("summary") or result.get("output") or ""))
         elif any(token in combined_output for token in error_signals):
             failed = True
             reason = "Output contains real error signals"
+            evidence.append(safe_trim(result_output, 500))
 
-    review = {"failed": failed, "reason": reason, "returncode": returncode}
+    failed_tool_events = [
+        item for item in tool_history
+        if isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("status") == "error"
+    ]
+    if failed_tool_events and not failed:
+        failed = True
+        latest = failed_tool_events[-1]["result"]
+        reason = f"Tool failure detected: {latest.get('error_type') or latest.get('summary') or 'unknown'}"
+        evidence.append(str(latest.get("summary") or latest.get("output") or ""))
+
+    modified_files = state.get("modified_files", []) or []
+    acceptance_criteria = state.get("acceptance_criteria", []) or []
+    if not failed and state.get("task_type") != "analysis":
+        if modified_files:
+            evidence.append(f"modified_files={modified_files[-5:]}")
+        elif not result_history_indicates_done(state):
+            evidence.append("no modified files recorded for a coding task")
+
+    review = {
+        "failed": failed,
+        "reason": reason,
+        "returncode": returncode,
+        "step_index": state.get("current_task_index", 0),
+        "step": state.get("current_task", ""),
+        "acceptance_criteria": acceptance_criteria,
+        "modified_files": modified_files[-8:],
+        "evidence": [safe_trim(str(item), 600) for item in evidence if item],
+    }
     state["status"] = "needs_fix" if failed else "step_ok"
     state["last_review"] = review
-    log_state(trace, "check_result", json.dumps(review, ensure_ascii=False), session_id=session_id, state=state)
+    state.setdefault("verification_results", []).append(review)
+    if failed:
+        state["failure_reason"] = reason
+    else:
+        state["failure_reason"] = ""
+    log_state(trace, "verifier", json.dumps(review, ensure_ascii=False), session_id=session_id, state=state)
 
     if not failed and result.get("status") == "success" and not execution:
         result_text = str(result.get("output", "")).lower()
@@ -650,9 +855,17 @@ def check_result_node(state: AgentState) -> AgentState:
     return state
 
 
+def result_history_indicates_done(state: AgentState) -> bool:
+    text = "\n".join(state.get("result_history", [])[-3:]).lower()
+    done_signals = ("no changes needed", "already done", "already exists", "无需修改", "不需要修改")
+    return any(signal in text for signal in done_signals)
+
+
+def check_result_node(state: AgentState) -> AgentState:
+    return verifier_node(state)
+
+
 def modify_code_node(state: AgentState) -> AgentState:
-    if state.get("status") == "stopped":
-        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
@@ -691,8 +904,6 @@ def modify_code_node(state: AgentState) -> AgentState:
             ),
             state,
         )
-        if _check_cancel(state):
-            return state
         updated_code = data.get("updated_code", "")
         diagnosis = data.get("diagnosis", "")
         summary = data.get("summary", "")
@@ -720,31 +931,49 @@ def modify_code_node(state: AgentState) -> AgentState:
     return state
 
 
+def repair_node(state: AgentState) -> AgentState:
+    state["retry_count"] = state.get("retry_count", 0) + 1
+    trace = state.get("trace", [])
+    session_id = state.get("session_id")
+    log_state(
+        trace,
+        "repair",
+        (
+            f"开始第 {state['retry_count']} 次修复。"
+            f"原因: {state.get('failure_reason') or state.get('last_review', {}).get('reason', 'unknown')}"
+        ),
+        session_id=session_id,
+        state=state,
+    )
+    return modify_code_node(state)
+
+
 def finalize_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
     used_tools = sorted(set(state.get("used_tools", [])))
     result_history = "\n\n".join(state.get("result_history", []))
-    if state.get("status") == "stopped":
-        final_summary = (
-            f"Overall task: {state['task']}\n\n"
-            "Execution was stopped by the user. No further agent steps will be run.\n\n"
-            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-            "Final status: stopped"
-        )
-    else:
-        final_summary = (
-            f"Overall task: {state['task']}\n\n"
-            f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
-            f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
-            f"Target file: {state.get('target_file', '')}\n"
-            f"Run command: {state.get('run_command', '')}\n\n"
-            f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-            f"Final status: {state.get('status', 'unknown')}"
-        )
+    verification_results = state.get("verification_results", [])
+    latest_verification = verification_results[-1] if verification_results else {}
+    context_files = ", ".join(state.get("relevant_files", [])[:8]) or "none"
+    modified_files = ", ".join(state.get("modified_files", [])[-8:]) or "none"
+    final_summary = (
+        f"Overall task: {state['task']}\n\n"
+        f"Task type: {state.get('task_type', 'unknown')}\n"
+        f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
+        f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
+        f"Repair retries: {state.get('retry_count', 0)}\n"
+        f"Target file: {state.get('target_file', '')}\n"
+        f"Run command: {state.get('run_command', '')}\n\n"
+        f"Relevant files: {context_files}\n"
+        f"Modified files: {modified_files}\n"
+        f"Latest verification: {safe_trim(json.dumps(latest_verification, ensure_ascii=False), 1200)}\n\n"
+        f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
+        f"Final status: {state.get('status', 'unknown')}"
+    )
     state["final_answer"] = final_summary
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
-    if not state.get("eval_mode") and state.get("status") != "stopped":
+    if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
 
     if session_id:
@@ -753,26 +982,6 @@ def finalize_node(state: AgentState) -> AgentState:
         if final_status not in ("stopped", "skipped"):
             final_status = "completed"
         update_session_state(session_id, state, status=final_status)
-        round_id = state.get("current_round_id")
-        if round_id:
-            try:
-                from datetime import datetime
-                with get_connection() as conn:
-                    conn.execute(
-                        """UPDATE conversation_rounds
-                           SET status = ?, finished_at = ?, final_answer = ?, trace_json = ?, runtime_metrics_json = ?
-                           WHERE id = ?""",
-                        (
-                            final_status,
-                            datetime.now().isoformat(),
-                            final_summary,
-                            json.dumps(state.get("trace") or [], ensure_ascii=False),
-                            json.dumps(state.get("runtime_metrics") or {}, ensure_ascii=False),
-                            round_id,
-                        ),
-                    )
-            except Exception as e:
-                print(f"Error finalizing conversation round: {e}")
 
     return state
 
@@ -794,27 +1003,7 @@ def route_after_check(state: AgentState) -> str:
     return "finalize"
 
 
-def route_after_planner(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "executor"
-
-
-def route_after_executor(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "check_result"
-
-
-def route_after_modify(state: AgentState) -> str:
-    if state.get("status") == "stopped":
-        return "finalize"
-    return "executor"
-
-
 def next_step_node(state: AgentState) -> AgentState:
-    if _check_cancel(state):
-        return state
     idx = state.get("current_task_index", 0) + 1
     state["current_task_index"] = idx
     tasks = state.get("task_list", [])
@@ -822,6 +1011,13 @@ def next_step_node(state: AgentState) -> AgentState:
     state["last_tool_result"] = {}
     state["last_execution"] = {}
     state["status"] = "next_step"
+    plan = state.get("current_plan") or []
+    for step in plan:
+        if isinstance(step, dict):
+            if step.get("id") == idx:
+                step["status"] = "done"
+            if step.get("id") == idx + 1:
+                step["status"] = "current"
     return state
 
 # Graph execution
@@ -833,29 +1029,27 @@ def build_graph():
 
     graph = StateGraph(AgentState)
     graph.add_node("planner", planner_node)
+    graph.add_node("context_builder", context_builder_node)
     graph.add_node("executor", executor_node)
-    graph.add_node("check_result", check_result_node)
-    graph.add_node("modify_code", modify_code_node)
+    graph.add_node("verifier", verifier_node)
+    graph.add_node("repair", repair_node)
     graph.add_node("next_step", next_step_node)
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("planner")
-    graph.add_conditional_edges("planner", route_after_planner, {"executor": "executor", "finalize": "finalize"})
+    graph.add_edge("planner", "context_builder")
+    graph.add_edge("context_builder", "executor")
+    graph.add_edge("executor", "verifier")
     graph.add_conditional_edges(
-        "executor",
-        route_after_executor,
-        {"check_result": "check_result", "finalize": "finalize"},
-    )
-    graph.add_conditional_edges(
-        "check_result",
+        "verifier",
         route_after_check,
         {
-            "modify_code": "modify_code",
+            "modify_code": "repair",
             "next_step": "next_step",
             "finalize": "finalize",
         },
     )
-    graph.add_conditional_edges("modify_code", route_after_modify, {"executor": "executor", "finalize": "finalize"})
+    graph.add_edge("repair", "context_builder")
     graph.add_edge("next_step", "executor")
     graph.add_edge("finalize", END)
     return graph.compile()
@@ -865,16 +1059,18 @@ def run_manual_fallback(state: AgentState) -> AgentState:
     state = planner_node(state)
     if state.get("status") == "stopped":
         return finalize_node(state)
+    state = context_builder_node(state)
     while True:
         if _check_cancel(state):
             break
         state = executor_node(state)
         if state.get("status") == "stopped":
             break
-        state = check_result_node(state)
+        state = verifier_node(state)
         route = route_after_check(state)
         if route == "modify_code":
-            state = modify_code_node(state)
+            state = repair_node(state)
+            state = context_builder_node(state)
             continue
         if route == "next_step":
             state = next_step_node(state)

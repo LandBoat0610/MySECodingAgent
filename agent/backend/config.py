@@ -52,11 +52,13 @@ def eval_model_context(model_id: str | None):
 
 # 安全拦截正则列表
 BLOCKED_BASH_PATTERNS = [
-    r"\brm\s+-rf\s+/\b",
+    r"\brm\s+-rf\s+/",
     r"\bshutdown\b",
     r"\breboot\b",
     r":\(\)\{:\|:&\};:",
     r"\bdd\s+if=",
     r"\bmkfs\b",
-    r"\bchmod\s+-R\s+777\s+/\b",
+    r"\bchmod\s+-R\s+777\s+/",
 ]
+
+BASH_APPROVAL_REQUIRED = not os.environ.get("SKIP_BASH_APPROVAL", "").lower() in ("1", "true", "yes")
