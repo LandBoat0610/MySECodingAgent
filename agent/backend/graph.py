@@ -1,5 +1,6 @@
 # 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
+import os
 import re
 import uuid
 import traceback
@@ -30,6 +31,18 @@ import time
 from agent.backend.database import get_connection
 
 
+TEXT_FILE_EXTENSIONS = (
+    ".py", ".js", ".ts", ".tsx", ".vue", ".json", ".md", ".txt",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".html", ".css",
+    ".scss", ".sh", ".bat", ".sql",
+)
+
+IGNORED_CONTEXT_DIRS = {
+    ".git", ".venv", "venv", "node_modules", "dist", "build",
+    "__pycache__", ".pytest_cache", ".mypy_cache", "agent/eval_storage",
+}
+
+
 def wait_for_plan_approval(session_id: str) -> str:
     timeout = 300
     start_time = time.time()
@@ -57,6 +70,167 @@ def wait_for_plan_approval(session_id: str) -> str:
     return "timeout"
 
 
+def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
+    normalized = []
+    for idx, step in enumerate(steps or [], 1):
+        if isinstance(step, dict):
+            goal = str(step.get("goal") or step.get("description") or step.get("step") or "").strip()
+            action = str(step.get("action") or "execute").strip()
+            verification = str(step.get("verification") or step.get("expected_result") or "").strip()
+            files = step.get("files_to_inspect") or step.get("files") or []
+            if isinstance(files, str):
+                files = [files]
+        else:
+            goal = str(step or "").strip()
+            action = "execute"
+            verification = ""
+            files = []
+        normalized.append({
+            "id": idx,
+            "goal": goal or f"完成第 {idx} 个步骤",
+            "action": action,
+            "files_to_inspect": files if isinstance(files, list) else [],
+            "verification": verification,
+            "status": "pending",
+        })
+    return normalized
+
+
+def _classify_task_type(task: str) -> str:
+    text = (task or "").lower()
+    if any(k in text for k in ("测试", "pytest", "test", "失败", "报错", "error", "bug", "修复", "fix")):
+        return "bug_fix"
+    if any(k in text for k in ("新增", "添加", "实现", "feature", "add", "create")):
+        return "feature"
+    if any(k in text for k in ("解释", "说明", "怎么", "如何", "review", "检查")):
+        return "analysis"
+    return "coding"
+
+
+def _infer_acceptance_criteria(state: AgentState) -> List[str]:
+    criteria = []
+    task_type = state.get("task_type", "coding")
+    if task_type == "analysis":
+        criteria.append("回答覆盖用户问题并指出关键代码位置。")
+    else:
+        criteria.extend([
+            "修改范围与用户需求一致，避免无关改动。",
+            "关键工具调用成功或失败原因已解释。",
+        ])
+    if state.get("run_command"):
+        criteria.append(f"可通过验证命令检查结果: {state.get('run_command')}")
+    if state.get("target_file"):
+        criteria.append(f"主要目标文件已检查: {state.get('target_file')}")
+    return criteria
+
+
+def _safe_relpath(path: str, root: str) -> str:
+    try:
+        return os.path.relpath(path, root).replace("\\", "/")
+    except Exception:
+        return path.replace("\\", "/")
+
+
+def _is_ignored_context_path(rel_path: str) -> bool:
+    parts = set(rel_path.replace("\\", "/").split("/"))
+    return any(ignored in parts or rel_path.startswith(ignored + "/") for ignored in IGNORED_CONTEXT_DIRS)
+
+
+def _collect_workspace_files(workspace_dir: str, limit: int = 120) -> List[str]:
+    files: List[str] = []
+    try:
+        for root, dirs, names in os.walk(workspace_dir):
+            rel_root = _safe_relpath(root, workspace_dir)
+            dirs[:] = [
+                d for d in dirs
+                if not _is_ignored_context_path(d)
+                and not _is_ignored_context_path(f"{rel_root}/{d}".strip("./"))
+            ]
+            for name in names:
+                rel = _safe_relpath(os.path.join(root, name), workspace_dir)
+                if _is_ignored_context_path(rel):
+                    continue
+                if name.endswith(TEXT_FILE_EXTENSIONS):
+                    files.append(rel)
+                if len(files) >= limit:
+                    return files
+    except Exception:
+        return files
+    return files
+
+
+def _extract_task_keywords(task: str) -> List[str]:
+    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", task or "")
+    stop = {"帮我", "完成", "修改", "现在", "这个", "那个", "项目", "代码", "功能", "如何", "怎么"}
+    keywords = []
+    for word in words:
+        if word in stop:
+            continue
+        if word not in keywords:
+            keywords.append(word)
+        if len(keywords) >= 8:
+            break
+    return keywords
+
+
+def _find_relevant_files(workspace_dir: str, task: str, target_file: str = "") -> List[str]:
+    files = _collect_workspace_files(workspace_dir)
+    relevant: List[str] = []
+    if target_file:
+        relevant.append(target_file)
+    keywords = _extract_task_keywords(task)
+    for rel in files:
+        basename = os.path.basename(rel).lower()
+        if any(k.lower() in basename for k in keywords):
+            relevant.append(rel)
+    if len(relevant) < 8 and keywords:
+        for rel in files:
+            if rel in relevant:
+                continue
+            path = os.path.join(workspace_dir, rel)
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    sample = f.read(4000)
+                if any(re.search(re.escape(k), sample, re.I) for k in keywords):
+                    relevant.append(rel)
+            except Exception:
+                continue
+            if len(relevant) >= 8:
+                break
+    seen = set()
+    return [f for f in relevant if not (f in seen or seen.add(f))][:8]
+
+
+def _build_retrieved_context(workspace_dir: str, relevant_files: List[str]) -> List[Dict[str, Any]]:
+    contexts = []
+    for rel in relevant_files[:5]:
+        try:
+            path = os.path.join(workspace_dir, rel)
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = safe_trim(f.read(), 1800)
+            contexts.append({"source": rel, "content": content})
+        except Exception as e:
+            contexts.append({"source": rel, "error": str(e)})
+    return contexts
+
+
+def _infer_test_commands(state: AgentState) -> List[str]:
+    commands = []
+    run_command = str(state.get("run_command") or "").strip()
+    if run_command:
+        commands.append(run_command)
+    workspace_dir = state.get("workspace_dir", "")
+    try:
+        if os.path.exists(os.path.join(workspace_dir, "pytest.ini")) or os.path.isdir(os.path.join(workspace_dir, "tests")):
+            commands.append("pytest -q")
+        if os.path.exists(os.path.join(workspace_dir, "agent", "frontend", "package.json")):
+            commands.append("cd agent/frontend && npm run test")
+    except Exception:
+        pass
+    seen = set()
+    return [cmd for cmd in commands if not (cmd in seen or seen.add(cmd))][:4]
+
+
 def planner_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
@@ -68,6 +242,7 @@ def planner_node(state: AgentState) -> AgentState:
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
 
     state["task_list"] = steps
+    state["current_plan"] = _normalize_step_objects(steps)
     state["current_task_index"] = 0
     state["current_task"] = steps[0] if steps else state["task"]
     state["target_file"] = targets["target_file"]
@@ -111,6 +286,7 @@ def planner_node(state: AgentState) -> AgentState:
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
             state["task_list"] = steps
+            state["current_plan"] = _normalize_step_objects(steps)
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
             state["target_file"] = targets["target_file"]
@@ -149,6 +325,64 @@ def planner_node(state: AgentState) -> AgentState:
             update_session_state(session_id, state, status="stopped")
             log_state(trace, "planner", f"执行终止: {approval_result}", session_id=session_id, state=state)
 
+    return state
+
+
+def context_builder_node(state: AgentState) -> AgentState:
+    if state.get("status") == "stopped":
+        return state
+    if _check_cancel(state):
+        return state
+
+    trace = state["trace"]
+    session_id = state.get("session_id")
+    workspace_dir = state["workspace_dir"]
+    task = state.get("task", "")
+
+    task_type = state.get("task_type") or _classify_task_type(task)
+    state["task_type"] = task_type
+    state["current_plan"] = state.get("current_plan") or _normalize_step_objects(state.get("task_list", []))
+    if state["current_plan"]:
+        current_idx = state.get("current_task_index", 0) + 1
+        for step in state["current_plan"]:
+            if isinstance(step, dict) and step.get("id") == current_idx and step.get("status") == "pending":
+                step["status"] = "current"
+
+    relevant_files = _find_relevant_files(workspace_dir, task, state.get("target_file", ""))
+    state["relevant_files"] = relevant_files
+    state["retrieved_context"] = _build_retrieved_context(workspace_dir, relevant_files)
+    state["acceptance_criteria"] = state.get("acceptance_criteria") or _infer_acceptance_criteria(state)
+    state["test_commands"] = state.get("test_commands") or _infer_test_commands(state)
+    state.setdefault("tool_history", [])
+    state.setdefault("verification_results", [])
+    state.setdefault("patch_history", [])
+    state.setdefault("retry_count", 0)
+    state.setdefault("failure_reason", "")
+
+    workspace_files = _collect_workspace_files(workspace_dir, limit=40)
+    state["codebase_summary"] = (
+        f"Task type: {task_type}\n"
+        f"Relevant files: {', '.join(relevant_files) if relevant_files else 'not found'}\n"
+        f"Candidate test commands: {', '.join(state.get('test_commands', [])) or 'none'}\n"
+        f"Workspace sample files: {', '.join(workspace_files[:20])}"
+    )
+
+    log_payload = {
+        "task_type": task_type,
+        "relevant_files": relevant_files,
+        "test_commands": state.get("test_commands", []),
+        "acceptance_criteria": state.get("acceptance_criteria", []),
+    }
+    log_state(
+        trace,
+        "context_builder",
+        json.dumps(log_payload, ensure_ascii=False),
+        session_id=session_id,
+        state=state,
+    )
+    if session_id:
+        from agent.backend.utils import update_session_state
+        update_session_state(session_id, state)
     return state
 
 
@@ -288,9 +522,21 @@ def executor_node(state: AgentState) -> AgentState:
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
+    context_summary = safe_trim(state.get("codebase_summary", ""), 1600)
+    retrieved_context = "\n\n".join(
+        f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
+        for item in state.get("retrieved_context", [])[:4]
+        if isinstance(item, dict)
+    )
+    criteria = "\n".join(f"- {item}" for item in state.get("acceptance_criteria", [])[:6])
     step_context = (
         f"Current step: {step_task}\n\n"
+        f"Task type: {state.get('task_type', 'coding')}\n\n"
+        f"Acceptance criteria:\n{criteria or '- Complete the user request accurately.'}\n\n"
+        f"Codebase context:\n{context_summary or 'No context summary available.'}\n\n"
+        f"Retrieved snippets:\n{safe_trim(retrieved_context, 2800) or 'No snippets available.'}\n\n"
         f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
+        f"For coding tasks, inspect relevant files before modifying them and verify the result when possible. "
         f"If the step is already done (e.g. the file already exists and works), "
         f"just respond with a brief summary without calling any tools. "
         f"Do NOT create extra files or do extra work beyond this step. "
@@ -449,7 +695,23 @@ def executor_node(state: AgentState) -> AgentState:
                     record_tool_call(state, function_name, ok, elapsed_ms)
 
             action_log.append({"tool": function_name, "args": function_args, "result": parsed_result})
+            state.setdefault("tool_history", []).append({
+                "step_index": state.get("current_task_index", 0),
+                "step": step_task,
+                "tool": function_name,
+                "args": function_args,
+                "result": parsed_result,
+            })
             state.setdefault("used_tools", []).append(function_name)
+            for modified in parsed_result.get("modified_files") or []:
+                if modified not in state.setdefault("modified_files", []):
+                    state["modified_files"].append(modified)
+            if function_name == "apply_patch":
+                state.setdefault("patch_history", []).append({
+                    "target": function_args.get("target"),
+                    "status": parsed_result.get("status"),
+                    "summary": parsed_result.get("summary") or parsed_result.get("output"),
+                })
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
             log_state(trace, "observe", result_text, session_id=session_id, state=state)
             state["last_tool_result"] = parsed_result
@@ -481,13 +743,16 @@ def executor_node(state: AgentState) -> AgentState:
     return state
 
 
-def check_result_node(state: AgentState) -> AgentState:
+def verifier_node(state: AgentState) -> AgentState:
+    if state.get("status") == "stopped":
+        return state
     if _check_cancel(state):
         return state
     trace = state["trace"]
     session_id = state.get("session_id")
     result = state.get("last_tool_result", {}) or {}
     execution = state.get("last_execution", {}) or {}
+    tool_history = state.get("tool_history", []) or []
 
     result_output = str(result.get("output") or "")
     execution_output = str(execution.get("output") or "")
@@ -506,33 +771,74 @@ def check_result_node(state: AgentState) -> AgentState:
     ]
 
     failed = False
-    reason = "Result passed basic checks"
+    reason = "Result passed verifier checks"
+    evidence: List[str] = []
 
     if execution:
         if isinstance(returncode, int) and returncode != 0:
             failed = True
             reason = "Execution returned non-zero exit code"
+            evidence.append(f"returncode={returncode}")
         elif result.get("status") == "error":
             failed = True
             reason = f"Execution failed: {result.get('error_type') or result.get('summary', 'unknown error')}"
+            evidence.append(str(result.get("summary") or result.get("output") or ""))
         elif any(token in stderr_text for token in error_signals):
             failed = True
             reason = "Execution stderr contains real error signals"
+            evidence.append(safe_trim(execution_output, 500))
         else:
             failed = False
             reason = "Execution succeeded"
+            evidence.append("last execution succeeded")
     else:
         if result.get("status") == "error":
             failed = True
-            reason = "Last tool returned error status"
+            reason = f"Last tool returned error status: {result.get('error_type') or result.get('summary') or 'unknown'}"
+            evidence.append(str(result.get("summary") or result.get("output") or ""))
         elif any(token in combined_output for token in error_signals):
             failed = True
             reason = "Output contains real error signals"
+            evidence.append(safe_trim(result_output, 500))
 
-    review = {"failed": failed, "reason": reason, "returncode": returncode}
+    failed_tool_events = [
+        item for item in tool_history
+        if isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("status") == "error"
+    ]
+    if failed_tool_events and not failed:
+        failed = True
+        latest = failed_tool_events[-1]["result"]
+        reason = f"Tool failure detected: {latest.get('error_type') or latest.get('summary') or 'unknown'}"
+        evidence.append(str(latest.get("summary") or latest.get("output") or ""))
+
+    modified_files = state.get("modified_files", []) or []
+    acceptance_criteria = state.get("acceptance_criteria", []) or []
+    if not failed and state.get("task_type") != "analysis":
+        if modified_files:
+            evidence.append(f"modified_files={modified_files[-5:]}")
+        elif not result_history_indicates_done(state):
+            evidence.append("no modified files recorded for a coding task")
+
+    review = {
+        "failed": failed,
+        "reason": reason,
+        "returncode": returncode,
+        "step_index": state.get("current_task_index", 0),
+        "step": state.get("current_task", ""),
+        "acceptance_criteria": acceptance_criteria,
+        "modified_files": modified_files[-8:],
+        "evidence": [safe_trim(str(item), 600) for item in evidence if item],
+    }
     state["status"] = "needs_fix" if failed else "step_ok"
     state["last_review"] = review
-    log_state(trace, "check_result", json.dumps(review, ensure_ascii=False), session_id=session_id, state=state)
+    state.setdefault("verification_results", []).append(review)
+    if failed:
+        state["failure_reason"] = reason
+    else:
+        state["failure_reason"] = ""
+    log_state(trace, "verifier", json.dumps(review, ensure_ascii=False), session_id=session_id, state=state)
 
     if not failed and result.get("status") == "success" and not execution:
         result_text = str(result.get("output", "")).lower()
@@ -544,6 +850,16 @@ def check_result_node(state: AgentState) -> AgentState:
                       session_id=session_id, state=state)
 
     return state
+
+
+def result_history_indicates_done(state: AgentState) -> bool:
+    text = "\n".join(state.get("result_history", [])[-3:]).lower()
+    done_signals = ("no changes needed", "already done", "already exists", "无需修改", "不需要修改")
+    return any(signal in text for signal in done_signals)
+
+
+def check_result_node(state: AgentState) -> AgentState:
+    return verifier_node(state)
 
 
 def modify_code_node(state: AgentState) -> AgentState:
@@ -612,17 +928,43 @@ def modify_code_node(state: AgentState) -> AgentState:
     return state
 
 
+def repair_node(state: AgentState) -> AgentState:
+    state["retry_count"] = state.get("retry_count", 0) + 1
+    trace = state.get("trace", [])
+    session_id = state.get("session_id")
+    log_state(
+        trace,
+        "repair",
+        (
+            f"开始第 {state['retry_count']} 次修复。"
+            f"原因: {state.get('failure_reason') or state.get('last_review', {}).get('reason', 'unknown')}"
+        ),
+        session_id=session_id,
+        state=state,
+    )
+    return modify_code_node(state)
+
+
 def finalize_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
     used_tools = sorted(set(state.get("used_tools", [])))
     result_history = "\n\n".join(state.get("result_history", []))
+    verification_results = state.get("verification_results", [])
+    latest_verification = verification_results[-1] if verification_results else {}
+    context_files = ", ".join(state.get("relevant_files", [])[:8]) or "none"
+    modified_files = ", ".join(state.get("modified_files", [])[-8:]) or "none"
     final_summary = (
         f"Overall task: {state['task']}\n\n"
+        f"Task type: {state.get('task_type', 'unknown')}\n"
         f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
         f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
+        f"Repair retries: {state.get('retry_count', 0)}\n"
         f"Target file: {state.get('target_file', '')}\n"
         f"Run command: {state.get('run_command', '')}\n\n"
+        f"Relevant files: {context_files}\n"
+        f"Modified files: {modified_files}\n"
+        f"Latest verification: {safe_trim(json.dumps(latest_verification, ensure_ascii=False), 1200)}\n\n"
         f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
         f"Final status: {state.get('status', 'unknown')}"
     )
@@ -666,6 +1008,13 @@ def next_step_node(state: AgentState) -> AgentState:
     state["last_tool_result"] = {}
     state["last_execution"] = {}
     state["status"] = "next_step"
+    plan = state.get("current_plan") or []
+    for step in plan:
+        if isinstance(step, dict):
+            if step.get("id") == idx:
+                step["status"] = "done"
+            if step.get("id") == idx + 1:
+                step["status"] = "current"
     return state
 
 # Graph execution
@@ -677,25 +1026,27 @@ def build_graph():
 
     graph = StateGraph(AgentState)
     graph.add_node("planner", planner_node)
+    graph.add_node("context_builder", context_builder_node)
     graph.add_node("executor", executor_node)
-    graph.add_node("check_result", check_result_node)
-    graph.add_node("modify_code", modify_code_node)
+    graph.add_node("verifier", verifier_node)
+    graph.add_node("repair", repair_node)
     graph.add_node("next_step", next_step_node)
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "executor")
-    graph.add_edge("executor", "check_result")
+    graph.add_edge("planner", "context_builder")
+    graph.add_edge("context_builder", "executor")
+    graph.add_edge("executor", "verifier")
     graph.add_conditional_edges(
-        "check_result",
+        "verifier",
         route_after_check,
         {
-            "modify_code": "modify_code",
+            "modify_code": "repair",
             "next_step": "next_step",
             "finalize": "finalize",
         },
     )
-    graph.add_edge("modify_code", "executor")
+    graph.add_edge("repair", "context_builder")
     graph.add_edge("next_step", "executor")
     graph.add_edge("finalize", END)
     return graph.compile()
@@ -705,16 +1056,18 @@ def run_manual_fallback(state: AgentState) -> AgentState:
     state = planner_node(state)
     if state.get("status") == "stopped":
         return finalize_node(state)
+    state = context_builder_node(state)
     while True:
         if _check_cancel(state):
             break
         state = executor_node(state)
         if state.get("status") == "stopped":
             break
-        state = check_result_node(state)
+        state = verifier_node(state)
         route = route_after_check(state)
         if route == "modify_code":
-            state = modify_code_node(state)
+            state = repair_node(state)
+            state = context_builder_node(state)
             continue
         if route == "next_step":
             state = next_step_node(state)

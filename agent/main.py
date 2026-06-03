@@ -276,6 +276,20 @@ def create_session(project_id: str, req: SessionCreateRequest):
             "last_tool_result": {},
             "last_execution": {},
             "final_answer": "",
+            "task_type": "",
+            "task_difficulty": "",
+            "current_plan": [],
+            "acceptance_criteria": [],
+            "relevant_files": [],
+            "retrieved_context": [],
+            "codebase_summary": "",
+            "test_commands": [],
+            "tool_history": [],
+            "verification_results": [],
+            "patch_history": [],
+            "failure_reason": "",
+            "retry_count": 0,
+            "last_review": {},
             "original_target_path": "",
             "should_sync_back": False,
             "project_root": proj["workspace_path"],
@@ -488,6 +502,20 @@ def chat(project_id: str, sid: str, req: ChatRequest):
         state["current_task"] = ""
         state["last_tool_result"] = {}
         state["last_execution"] = {}
+        state["task_type"] = ""
+        state["task_difficulty"] = ""
+        state["current_plan"] = []
+        state["acceptance_criteria"] = []
+        state["relevant_files"] = []
+        state["retrieved_context"] = []
+        state["codebase_summary"] = ""
+        state["test_commands"] = []
+        state["tool_history"] = []
+        state["verification_results"] = []
+        state["patch_history"] = []
+        state["failure_reason"] = ""
+        state["retry_count"] = 0
+        state["last_review"] = {}
         state["pending_tool_approval"] = None
         state["pending_loop_approval"] = None
         state["runtime_metrics"] = {

@@ -22,6 +22,20 @@ class AgentState(TypedDict, total=False):
     workspace_dir: str
     final_answer: str
     status: str
+    task_type: str
+    task_difficulty: str
+    current_plan: List[Dict[str, Any]]
+    acceptance_criteria: List[str]
+    relevant_files: List[str]
+    retrieved_context: List[Dict[str, Any]]
+    codebase_summary: str
+    test_commands: List[str]
+    tool_history: List[Dict[str, Any]]
+    verification_results: List[Dict[str, Any]]
+    patch_history: List[Dict[str, Any]]
+    failure_reason: str
+    retry_count: int
+    last_review: Dict[str, Any]
     used_tools: List[str]
     result_history: List[str]
     original_target_path: str

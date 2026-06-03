@@ -302,7 +302,7 @@ Agent Platform 是一个全栈项目（Python 后端 + Vue 前端），核心能
 
 ```bash
 # 1. 进入项目目录
-cd 2-1
+cd 3
 
 # 2. 创建并激活虚拟环境
 python -m venv venv
