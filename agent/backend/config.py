@@ -70,3 +70,9 @@ RAG_DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "5"))
 RAG_CHUNK_SIZE = int(os.environ.get("RAG_CHUNK_SIZE", "500"))
 RAG_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "50"))
 RAG_COLLECTION_NAME = "agent_knowledge"
+
+# ── 跨对话记忆与上下文工程配置 ──
+CONTEXT_BUDGET = int(os.environ.get("CONTEXT_BUDGET", "12000"))
+MEMORY_MAX_ENTRIES = int(os.environ.get("MEMORY_MAX_ENTRIES", "20"))
+HISTORY_RETRIEVAL_LIMIT = int(os.environ.get("HISTORY_RETRIEVAL_LIMIT", "5"))
+SESSION_SUMMARY_MAX_LENGTH = int(os.environ.get("SESSION_SUMMARY_MAX_LENGTH", "500"))

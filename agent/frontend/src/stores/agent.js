@@ -25,7 +25,11 @@ import {
   getSkills,
   createSkill,
   updateSkill,
-  deleteSkill
+  deleteSkill,
+  getMemoryContext,
+  getProjectMemory,
+  getProjectHistory,
+  getUserPreferences,
 } from '../api/index.js'
 import { persistProjectId, getPersistedProjectId, persistSessionId, getPersistedSessionId } from '../utils/persistence.js'
 
@@ -66,6 +70,14 @@ export const useAgentStore = defineStore('agent', () => {
   const roundsCursor = ref(null)
   const roundsHasMore = ref(false)
   const roundsLoadingOlder = ref(false)
+
+  /** 跨对话记忆与上下文工程 */
+  const sessionSummary = ref('')       // 当前会话摘要
+  const projectMemory = ref('')        // 项目记忆文本
+  const userPreferences = ref('')      // 用户偏好文本
+  const relevantHistory = ref([])      // 历史对话列表
+  const contextBudget = ref(12000)     // 上下文预算
+  const memoryLoading = ref(false)     // 记忆加载状态
 
   /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
   const agentRunStartedAt = ref(null)
@@ -444,6 +456,27 @@ export const useAgentStore = defineStore('agent', () => {
       return true
     } finally {
       roundsLoadingOlder.value = false
+    }
+  }
+
+  /** 跨对话记忆：加载记忆上下文 */
+  async function fetchMemoryContext() {
+    if (!selectedProjectId.value) return
+    memoryLoading.value = true
+    try {
+      const ctx = await getMemoryContext(
+        selectedProjectId.value,
+        selectedSessionId.value || ''
+      )
+      sessionSummary.value = ctx.session_summary || ''
+      projectMemory.value = ctx.project_memory || ''
+      userPreferences.value = ctx.user_preferences || ''
+      relevantHistory.value = ctx.relevant_history || []
+      contextBudget.value = ctx.context_budget || 12000
+    } catch (e) {
+      console.warn('Failed to load memory context:', e)
+    } finally {
+      memoryLoading.value = false
     }
   }
 
@@ -932,5 +965,13 @@ export const useAgentStore = defineStore('agent', () => {
     prevRoundPlanIds,
     roundsHasMore,
     roundsLoadingOlder,
+    // 跨对话记忆
+    sessionSummary,
+    projectMemory,
+    userPreferences,
+    relevantHistory,
+    contextBudget,
+    memoryLoading,
+    fetchMemoryContext,
   }
 })

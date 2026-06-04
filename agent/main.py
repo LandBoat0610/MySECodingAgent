@@ -14,7 +14,7 @@ import asyncio
 from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, HTTPException, WebSocket, WebSocketDisconnect
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -56,6 +56,15 @@ from agent.backend.platform_settings import (
     delete_skill,
 )
 from agent.backend.eval_router import router as eval_router
+from agent.backend.session_manager import (
+    get_memory_context,
+    save_project_memory,
+    list_project_memory,
+    get_user_preferences,
+    save_user_preference,
+    list_user_preferences,
+    get_relevant_history,
+)
 
 
 @asynccontextmanager
@@ -1157,3 +1166,48 @@ def rag_stats_api():
     """返回知识库统计信息。"""
     from agent.backend.rag import get_rag_stats
     return get_rag_stats()
+
+
+# ── 跨对话记忆与上下文工程 API ────────────────────────────────────
+
+
+@app.get("/projects/{project_id}/memory/context")
+def memory_context_api(project_id: str, session_id: str = ""):
+    """获取完整记忆上下文，用于 Agent 初始化。"""
+    return get_memory_context(project_id, session_id)
+
+
+@app.get("/projects/{project_id}/memory")
+def list_memory_api(project_id: str):
+    """列出项目所有记忆条目。"""
+    return list_project_memory(project_id)
+
+
+@app.post("/projects/{project_id}/memory")
+def save_memory_api(project_id: str, key: str = Form(...), value: str = Form(...), category: str = Form("general")):
+    """保存一条项目记忆。"""
+    ok = save_project_memory(project_id, key, value, category)
+    if not ok:
+        raise HTTPException(status_code=500, detail="保存记忆失败")
+    return {"success": True, "key": key, "category": category}
+
+
+@app.get("/projects/{project_id}/history")
+def history_api(project_id: str, query: str = "", limit: int = 5):
+    """检索项目历史对话。"""
+    return get_relevant_history(project_id, query, limit)
+
+
+@app.get("/preferences")
+def get_preferences_api():
+    """获取用户偏好列表。"""
+    return list_user_preferences()
+
+
+@app.post("/preferences")
+def save_preference_api(key: str = Form(...), value: str = Form(...)):
+    """保存一条用户偏好。"""
+    ok = save_user_preference(key, value)
+    if not ok:
+        raise HTTPException(status_code=500, detail="保存偏好失败")
+    return {"success": True, "key": key}

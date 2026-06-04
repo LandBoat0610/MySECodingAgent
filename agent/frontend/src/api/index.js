@@ -194,3 +194,35 @@ export function getEvalCompareAnalytics(leftTaskId, rightTaskId) {
     params: { left: leftTaskId, right: rightTaskId }
   }).then(r => r.data)
 }
+
+// ── 跨对话记忆 ────────────────────────────────────────────────────
+
+export function getMemoryContext(projectId, sessionId = '') {
+  const params = {}
+  if (sessionId) params.session_id = sessionId
+  return api.get(`/projects/${projectId}/memory/context`, { params }).then(r => r.data)
+}
+
+export function getProjectMemory(projectId) {
+  return api.get(`/projects/${projectId}/memory`).then(r => r.data)
+}
+
+export function saveProjectMemory(projectId, key, value, category = 'general') {
+  return api.post(`/projects/${projectId}/memory`, null, {
+    params: { key, value, category }
+  }).then(r => r.data)
+}
+
+export function getProjectHistory(projectId, query = '', limit = 5) {
+  return api.get(`/projects/${projectId}/history`, {
+    params: { query, limit }
+  }).then(r => r.data)
+}
+
+export function getUserPreferences() {
+  return api.get('/preferences').then(r => r.data)
+}
+
+export function saveUserPreference(key, value) {
+  return api.post('/preferences', null, { params: { key, value } }).then(r => r.data)
+}

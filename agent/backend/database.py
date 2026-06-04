@@ -4,7 +4,9 @@ from contextlib import contextmanager
 
 from agent.backend.eval_storage import ensure_eval_storage_dirs
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "agent_platform.db")
+DB_PATH = os.environ.get("AGENT_DB_PATH") or os.path.join(
+    os.path.dirname(__file__), "..", "..", "agent_platform.db"
+)
 
 
 def _migrate_eval_results_columns(conn: sqlite3.Connection) -> None:
@@ -98,6 +100,23 @@ def init_db():
                 trace_json TEXT DEFAULT '[]',
                 runtime_metrics_json TEXT DEFAULT '{}',
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE IF NOT EXISTS project_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, key)
+            );
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id TEXT DEFAULT 'default',
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, key)
             );
             CREATE TABLE IF NOT EXISTS eval_datasets (
                 id TEXT PRIMARY KEY,

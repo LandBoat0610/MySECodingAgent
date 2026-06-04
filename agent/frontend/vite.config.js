@@ -54,6 +54,14 @@ export default defineConfig({
       '/eval': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true
+      },
+      '/preferences': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true
+      },
+      '/rag': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true
       }
     }
   }

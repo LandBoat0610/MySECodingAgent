@@ -26,6 +26,11 @@ from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
 from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
+from agent.backend.session_manager import (
+    get_memory_context,
+    generate_and_save_session_summary,
+    save_project_memory,
+)
 
 import time
 from agent.backend.database import get_connection
@@ -453,6 +458,23 @@ def context_builder_node(state: AgentState) -> AgentState:
     state.setdefault("failure_reason", "")
 
     workspace_files = _collect_workspace_files(workspace_dir, limit=40)
+
+    # 跨对话记忆与上下文工程
+    project_id = state.get("project_id", "")
+    if project_id:
+        memory_ctx = get_memory_context(project_id, session_id)
+        state["session_summary"] = str(memory_ctx.get("session_summary", ""))
+        state["project_memory"] = str(memory_ctx.get("project_memory", ""))
+        state["user_preferences"] = str(memory_ctx.get("user_preferences", ""))
+        state["relevant_history"] = memory_ctx.get("relevant_history", [])
+        state["context_budget"] = int(memory_ctx.get("context_budget", 12000))
+    else:
+        state.setdefault("session_summary", "")
+        state.setdefault("project_memory", "")
+        state.setdefault("user_preferences", "")
+        state.setdefault("relevant_history", [])
+        state.setdefault("context_budget", 12000)
+
     state["codebase_summary"] = (
         f"Task type: {task_type}\n"
         f"Relevant files: {', '.join(relevant_files) if relevant_files else 'not found'}\n"
@@ -611,7 +633,17 @@ def executor_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id")
     messages = state["messages"]
     step_task = state.get("current_task", state["task"])
-    system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
+    # 组装完整记忆上下文：旧记忆 + 跨对话记忆
+    full_memory_parts = [state.get("memory", "")]
+    if state.get("project_memory"):
+        full_memory_parts.append(f"【项目记忆】\n{state['project_memory']}")
+    if state.get("session_summary"):
+        full_memory_parts.append(f"【会话摘要】\n{state['session_summary']}")
+    if state.get("user_preferences"):
+        full_memory_parts.append(f"【用户偏好】\n{state['user_preferences']}")
+    if state.get("context_budget"):
+        full_memory_parts.append(f"【上下文预算】当前可用 {state['context_budget']} tokens")
+    system_prompt = build_system_prompt("\n\n".join(filter(None, full_memory_parts)), state["workspace_dir"])
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
@@ -1082,6 +1114,17 @@ def finalize_node(state: AgentState) -> AgentState:
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
     if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
+        # 跨对话记忆：保存会话摘要和项目记忆
+        project_id = state.get("project_id", "")
+        if project_id and session_id:
+            try:
+                generate_and_save_session_summary(
+                    session_id, project_id, state["task"], final_summary
+                )
+                # 自动提取并保存项目级关键信息
+                _auto_extract_project_memory(state, project_id)
+            except Exception:
+                pass
 
     if session_id:
         from agent.backend.utils import update_session_state
@@ -1128,6 +1171,46 @@ def next_step_node(state: AgentState) -> AgentState:
     return state
 
 # Graph execution
+
+
+def _auto_extract_project_memory(state: AgentState, project_id: str) -> None:
+    """自动从 Agent 执行结果中提取项目级关键信息并保存。
+
+    提取内容：成功的测试命令、启动命令、已知问题。
+    """
+    try:
+        # 提取测试命令
+        test_commands = state.get("test_commands", [])
+        if test_commands:
+            for cmd in test_commands[:3]:
+                save_project_memory(
+                    project_id, f"test_cmd_{cmd[:30]}", cmd, "commands"
+                )
+
+        # 提取使用的工具列表作为项目能力记录
+        used_tools = state.get("used_tools", [])
+        if used_tools:
+            save_project_memory(
+                project_id,
+                "agent_capabilities",
+                f"Agent supports: {', '.join(sorted(set(used_tools)))}",
+                "capabilities",
+            )
+
+        # 提取验证结果
+        verification = state.get("verification_results", [])
+        if verification:
+            latest = verification[-1]
+            if isinstance(latest, dict):
+                if latest.get("status") == "error":
+                    save_project_memory(
+                        project_id,
+                        "last_known_issue",
+                        json.dumps(latest, ensure_ascii=False)[:500],
+                        "known_issues",
+                    )
+    except Exception:
+        pass
 
 
 def build_graph():
