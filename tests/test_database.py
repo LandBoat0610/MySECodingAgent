@@ -33,7 +33,10 @@ def test_init_db_creates_tables(temp_db_path):
         "conversation_rounds",
         "eval_datasets", "eval_task_results", "eval_tasks",
         "plan_actions", "plans", "platform_settings",
+        "project_memory",
         "projects", "sessions",
+        "sqlite_sequence",
+        "user_preferences",
     ]
     assert tables == expected
 
