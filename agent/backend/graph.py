@@ -1,4 +1,4 @@
-# 这里组装各个拆分出来的模块生成核心的生命周期图
+﻿# 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
 import os
 import re
@@ -23,7 +23,7 @@ from agent.backend.config import (
 )
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
-from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
+from agent.backend.llm import client, build_system_prompt, build_executor_prompt, build_final_summary, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
 from agent.backend.session_manager import (
@@ -81,13 +81,15 @@ def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
         if isinstance(step, dict):
             goal = str(step.get("goal") or step.get("description") or step.get("step") or "").strip()
             action = str(step.get("action") or "execute").strip()
-            verification = str(step.get("verification") or step.get("expected_result") or "").strip()
+            expected_result = str(step.get("expected_result") or "").strip()
+            verification = str(step.get("verification") or expected_result or "").strip()
             files = step.get("files_to_inspect") or step.get("files") or []
             if isinstance(files, str):
                 files = [files]
         else:
             goal = str(step or "").strip()
             action = "execute"
+            expected_result = ""
             verification = ""
             files = []
         normalized.append({
@@ -96,6 +98,7 @@ def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
             "action": action,
             "files_to_inspect": files if isinstance(files, list) else [],
             "verification": verification,
+            "expected_result": expected_result if isinstance(step, dict) else "",
             "status": "pending",
         })
     return normalized
@@ -340,7 +343,7 @@ def planner_node(state: AgentState) -> AgentState:
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
 
     state["task_list"] = steps
-    state["current_plan"] = _normalize_step_objects(steps)
+    state["current_plan"] = _normalize_step_objects(state.get("_structured_steps") or steps)
     state["current_task_index"] = 0
     state["current_task"] = steps[0] if steps else state["task"]
     state["target_file"] = targets["target_file"]
@@ -384,7 +387,7 @@ def planner_node(state: AgentState) -> AgentState:
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
             state["task_list"] = steps
-            state["current_plan"] = _normalize_step_objects(steps)
+            state["current_plan"] = _normalize_step_objects(state.get("_structured_steps") or steps)
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
             state["target_file"] = targets["target_file"]
@@ -647,32 +650,13 @@ def executor_node(state: AgentState) -> AgentState:
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
-    context_summary = safe_trim(state.get("codebase_summary", ""), 1600)
-    retrieved_context = "\n\n".join(
-        f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
-        for item in state.get("retrieved_context", [])[:4]
-        if isinstance(item, dict)
-    )
-    criteria = "\n".join(f"- {item}" for item in state.get("acceptance_criteria", [])[:6])
-    step_context = (
-        f"Current step: {step_task}\n\n"
-        f"Task type: {state.get('task_type', 'coding')}\n\n"
-        f"Acceptance criteria:\n{criteria or '- Complete the user request accurately.'}\n\n"
-        f"Codebase context:\n{context_summary or 'No context summary available.'}\n\n"
-        f"Retrieved snippets:\n{safe_trim(retrieved_context, 2800) or 'No snippets available.'}\n\n"
-        f"RAG rules:\n"
-        f"- If the user explicitly asks to call rag_search, you must call rag_search before answering.\n"
-        f"- If the task asks to answer from the knowledge base, project documents, README/docs, internal materials, "
-        f"release commands, or existing project context, call rag_search first.\n"
-        f"- If rag_search returns no results, say that no matching knowledge-base content was found and do not invent facts.\n"
-        f"- For simple math or general tasks that do not depend on project knowledge, do not call rag_search.\n\n"
-        f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
-        f"For coding tasks, inspect relevant files before modifying them and verify the result when possible. "
-        f"If the step is already done (e.g. the file already exists and works), "
-        f"just respond with a brief summary without calling any tools. "
-        f"Do NOT create extra files or do extra work beyond this step. "
-        f"When this step is complete, stop calling tools and give a short text summary."
-    )
+    # 使用结构化 Executor 提示词（来自 prompts.yaml executor_prompt）
+    current_step = {"goal": step_task, "verification": ""}
+    plan = state.get("current_plan", [])
+    step_idx = state.get("current_task_index", 0)
+    if isinstance(plan, list) and step_idx < len(plan) and isinstance(plan[step_idx], dict):
+        current_step = plan[step_idx]
+    step_context = build_executor_prompt(current_step, step_idx + 1, len(plan), state)
     messages.append({"role": "user", "content": step_context})
     action_log: List[Dict[str, Any]] = []
 
@@ -1096,21 +1080,8 @@ def finalize_node(state: AgentState) -> AgentState:
     latest_verification = verification_results[-1] if verification_results else {}
     context_files = ", ".join(state.get("relevant_files", [])[:8]) or "none"
     modified_files = ", ".join(state.get("modified_files", [])[-8:]) or "none"
-    final_summary = (
-        f"Overall task: {state['task']}\n\n"
-        f"Task type: {state.get('task_type', 'unknown')}\n"
-        f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
-        f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
-        f"Repair retries: {state.get('retry_count', 0)}\n"
-        f"Target file: {state.get('target_file', '')}\n"
-        f"Run command: {state.get('run_command', '')}\n\n"
-        f"Relevant files: {context_files}\n"
-        f"Modified files: {modified_files}\n"
-        f"Latest verification: {safe_trim(json.dumps(latest_verification, ensure_ascii=False), 1200)}\n\n"
-        f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-        f"Final status: {state.get('status', 'unknown')}"
-    )
-    state["final_answer"] = final_summary
+    state["final_answer"] = build_final_summary(state)
+    final_summary = state["final_answer"]
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
     if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
