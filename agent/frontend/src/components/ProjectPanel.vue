@@ -48,6 +48,7 @@
         </button>
         <div class="header-actions">
           <button class="btn-icon" @click="toggleSessionSearch" title="Search Sessions">⌕</button>
+          <button class="btn-icon" @click="store.startNewSession()" title="New Chat">+</button>
         </div>
       </div>
 
