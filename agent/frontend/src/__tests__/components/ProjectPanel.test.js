@@ -30,7 +30,6 @@ function createMockStore(overrides = {}) {
         selectSession: vi.fn(),
         doCreateProject: vi.fn(),
         doCreateSession: vi.fn(),
-        startNewSession: vi.fn(),
         doRenameSession: vi.fn(),
         doTogglePinSession: vi.fn(),
         doDeleteSession: vi.fn(),
@@ -235,17 +234,6 @@ describe('ProjectPanel.vue', () => {
             const wrapper = mount(ProjectPanel)
             await wrapper.find('button[title="Collapse Sessions"]').trigger('click')
             expect(wrapper.find('.session-list').exists()).toBe(false)
-        })
-    })
-
-    // ---- 新对话入口 ----
-    describe('new chat button', () => {
-        it('should call startNewSession when clicked', async () => {
-            const mockStore = createMockStore({ selectedProjectId: 'p1' })
-            useAgentStore.mockReturnValue(mockStore)
-            const wrapper = mount(ProjectPanel)
-            await wrapper.find('button[title="New Chat"]').trigger('click')
-            expect(mockStore.startNewSession).toHaveBeenCalled()
         })
     })
 

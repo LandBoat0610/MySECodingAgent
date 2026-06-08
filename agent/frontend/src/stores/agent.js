@@ -923,6 +923,8 @@ export const useAgentStore = defineStore('agent', () => {
     traceLogs,
     chatMessages,
     finalAnswer,
+    ragSources,
+    memorySummary,
     agentRunning,
     wsConnection,
     loading,

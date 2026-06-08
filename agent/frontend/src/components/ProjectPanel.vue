@@ -46,10 +46,7 @@
           <span class="panel-chevron">{{ sessionsCollapsed ? '▸' : '▾' }}</span>
           <span class="panel-title">Sessions</span>
         </button>
-        <div class="header-actions">
-          <button class="btn-icon" @click="toggleSessionSearch" title="Search Sessions">⌕</button>
-          <button class="btn-icon" @click="store.startNewSession()" title="New Chat">+</button>
-        </div>
+        <button class="btn-icon" @click="toggleSessionSearch" title="Search Sessions">⌕</button>
       </div>
 
       <div v-if="!sessionsCollapsed && showSessionSearch" class="session-search">
