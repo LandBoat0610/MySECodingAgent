@@ -1,8 +1,15 @@
 # tests/test_tools.py
 from agent.backend.tools import (
     execute_bash,
+    list_files,
     read_file,
+    read_file_range,
     write_file,
+    search_code,
+    apply_patch,
+    get_git_diff,
+    run_tests,
+    run_lint,
     web_search,
     fetch_url,
     parse_tool_arguments,
@@ -310,8 +317,6 @@ class TestEdgeCases:
         # 注意：由于 autouse fixture 会重置为 None，这里直接调用即可
         # 但我们需要保证调用时确实为 None
         monkeypatch.setattr("agent.backend.tools.CURRENT_WORKSPACE_DIR", None)
-        # 同时要避免 ensure_workspace 真的创建一个临时目录，因为无法预测路径。
-        # 我们可以 mock ensure_workspace 返回一个已知的临时路径
         temp_dir = str(tmp_path / "auto_workspace")
         os.makedirs(temp_dir, exist_ok=True)
         monkeypatch.setattr("agent.backend.tools.ensure_workspace", lambda: temp_dir)
@@ -319,3 +324,217 @@ class TestEdgeCases:
         data = json.loads(result_json)
         assert data["status"] == "success"
         assert os.path.exists(os.path.join(temp_dir, "auto.txt"))
+
+
+# ==================== list_files ====================
+class TestListFiles:
+    def test_list_non_recursive(self, sandbox_workspace):
+        # Create some files/dirs
+        os.makedirs(os.path.join(sandbox_workspace, "subdir"), exist_ok=True)
+        with open(os.path.join(sandbox_workspace, "a.py"), "w") as f:
+            f.write("x")
+        result_json = list_files(".")
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        entries = output["entries"]
+        names = [e["name"] for e in entries]
+        assert "a.py" in names
+        assert "subdir" in names
+
+    def test_list_recursive(self, sandbox_workspace):
+        os.makedirs(os.path.join(sandbox_workspace, "sub"), exist_ok=True)
+        with open(os.path.join(sandbox_workspace, "sub", "b.py"), "w") as f:
+            f.write("y")
+        result_json = list_files(".", recursive=True)
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        entries = output["entries"]
+        names = [e["name"] for e in entries]
+        assert "b.py" in names
+
+    def test_list_not_a_directory(self, sandbox_workspace):
+        with open(os.path.join(sandbox_workspace, "file.txt"), "w") as f:
+            f.write("content")
+        result_json = list_files("file.txt")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+
+    def test_list_nonexistent_path(self, sandbox_workspace):
+        result_json = list_files("no_such_dir")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+
+
+# ==================== read_file_range ====================
+class TestReadFileRange:
+    def test_read_range_basic(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "range_test.py")
+        lines = [f"line{i}\n" for i in range(1, 11)]
+        with open(filepath, "w") as f:
+            f.writelines(lines)
+        result_json = read_file_range("range_test.py", offset=1, limit=3)
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        assert "line1" in data["output"]
+        assert "line3" in data["output"]
+        assert "line4" not in data["output"]
+
+    def test_read_range_offset(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "offset_test.txt")
+        with open(filepath, "w") as f:
+            for i in range(1, 6):
+                f.write(f"Line {i}\n")
+        result_json = read_file_range("offset_test.txt", offset=3, limit=1)
+        data = json.loads(result_json)
+        assert "Line 3" in data["output"]
+
+    def test_read_range_file_not_found(self, sandbox_workspace):
+        result_json = read_file_range("nope.txt")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+        assert "not_found" in data.get("error_type", "")
+
+    def test_read_range_empty_file(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "empty_range.txt")
+        with open(filepath, "w") as f:
+            f.write("")
+        result_json = read_file_range("empty_range.txt", offset=1, limit=50)
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        assert "lines" in output
+
+
+# ==================== search_code ====================
+class TestSearchCode:
+    def test_search_in_file(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "search_me.py")
+        with open(filepath, "w") as f:
+            f.write("def hello():\n    return 'world'\n")
+        result_json = search_code("def hello", path="search_me.py")
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        assert output["count"] >= 1
+
+    def test_search_in_directory(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "code.py")
+        with open(filepath, "w") as f:
+            f.write("TODO: fix this bug\n")
+        result_json = search_code("TODO", path=".")
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        assert output["count"] >= 1
+
+    def test_search_no_match(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "nomatch.py")
+        with open(filepath, "w") as f:
+            f.write("nothing here\n")
+        result_json = search_code("zzzz_not_present", path=".")
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        assert output["count"] == 0
+
+    def test_search_path_not_found(self, sandbox_workspace):
+        result_json = search_code("pattern", path="no_such_path")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+
+    def test_search_case_insensitive(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "case.py")
+        with open(filepath, "w") as f:
+            f.write("Hello World\n")
+        result_json = search_code("hello", path=".", case_sensitive=False)
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        output = json.loads(data["output"])
+        assert output["count"] >= 1
+
+
+# ==================== apply_patch ====================
+class TestApplyPatch:
+    def test_apply_simple_patch(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "patch_target.py")
+        with open(filepath, "w") as f:
+            f.write("line1\nline2\nline3\n")
+        patch = "@@ -2,1 +2,1 @@\n-line2\n+modified_line2\n"
+        result_json = apply_patch("patch_target.py", patch)
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        with open(filepath) as f:
+            content = f.read()
+        assert "modified_line2" in content
+
+    def test_apply_patch_file_not_found(self, sandbox_workspace):
+        result_json = apply_patch("no_file.py", "@@ -1,1 +1,1 @@\n-old\n+new\n")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+
+    def test_apply_patch_no_hunks(self, sandbox_workspace):
+        filepath = os.path.join(sandbox_workspace, "no_hunk.py")
+        with open(filepath, "w") as f:
+            f.write("content\n")
+        result_json = apply_patch("no_hunk.py", "just text no hunks")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+
+
+# ==================== get_git_diff ====================
+class TestGetGitDiff:
+    def test_diff_in_non_repo_dir(self, sandbox_workspace):
+        result_json = get_git_diff()
+        data = json.loads(result_json)
+        # In a directory that is not a git repo (or git not installed), we may
+        # get an error from git or a "clean" response from a parent git repo
+        assert data["status"] in ("success", "error")
+        if data["status"] == "error":
+            assert "not_repo" in data.get("error_type", "") or "git" in data["output"].lower()
+
+
+# ==================== run_tests ====================
+class TestRunTests:
+    def test_pytest_not_installed(self, sandbox_workspace, monkeypatch):
+        def mock_run(*args, **kwargs):
+            raise FileNotFoundError("pytest")
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        result_json = run_tests(".")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+        assert "missing_tool" in data.get("error_type", "")
+
+    def test_no_tests_collected(self, sandbox_workspace, monkeypatch):
+        mock_result = MagicMock()
+        mock_result.returncode = 5
+        mock_result.stdout = "no tests ran"
+        mock_result.stderr = ""
+        monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_result)
+        result_json = run_tests(".")
+        data = json.loads(result_json)
+        assert "No tests collected" in data["output"]
+
+
+# ==================== run_lint ====================
+class TestRunLint:
+    def test_flake8_not_installed(self, sandbox_workspace, monkeypatch):
+        def mock_run(*args, **kwargs):
+            raise FileNotFoundError("flake8")
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        result_json = run_lint("test.py")
+        data = json.loads(result_json)
+        assert data["status"] == "error"
+        assert "missing_tool" in data.get("error_type", "")
+
+    def test_lint_clean(self, sandbox_workspace, monkeypatch):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+        monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_result)
+        result_json = run_lint("clean.py")
+        data = json.loads(result_json)
+        assert data["status"] == "success"
+        assert "No lint errors" in data["output"]

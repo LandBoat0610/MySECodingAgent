@@ -104,3 +104,46 @@ class TestConfig:
         with eval_model_context(None):
             assert _eval_model_override.get() is None
         assert _eval_model_override.get() is None
+
+    def test_get_effective_model_platform_settings_error(self, monkeypatch):
+        """平台设置抛出异常时回退到 MODEL。"""
+        from agent.backend.config import get_effective_model, _eval_model_override
+
+        monkeypatch.setattr(
+            "agent.backend.config._eval_model_override",
+            type(_eval_model_override)("eval_model_override", default=None),
+        )
+        monkeypatch.setattr("agent.backend.config.MODEL", "gpt-4o-mini")
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_agent_config",
+            lambda: (_ for _ in ()).throw(Exception("oops")),
+        )
+        result = get_effective_model()
+        assert result == "gpt-4o-mini"
+
+    def test_get_effective_model_with_platform_setting(self, monkeypatch):
+        """平台设置提供有效模型时使用平台设置。"""
+        from agent.backend.config import get_effective_model, _eval_model_override
+
+        monkeypatch.setattr(
+            "agent.backend.config._eval_model_override",
+            type(_eval_model_override)("eval_model_override", default=None),
+        )
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_agent_config",
+            lambda: {"model": "platform-model", "version_label": "v3"},
+        )
+        result = get_effective_model()
+        assert result == "platform-model"
+
+    def test_get_effective_model_eval_override_takes_priority(self, monkeypatch):
+        """评测覆盖优先于平台设置。"""
+        from agent.backend.config import get_effective_model, _eval_model_override, eval_model_context
+
+        monkeypatch.setattr(
+            "agent.backend.platform_settings.get_agent_config",
+            lambda: {"model": "platform-model", "version_label": "v3"},
+        )
+        with eval_model_context("eval-override-model"):
+            result = get_effective_model()
+            assert result == "eval-override-model"

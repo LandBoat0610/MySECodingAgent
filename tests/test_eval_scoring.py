@@ -3,6 +3,7 @@
 from agent.backend.eval_scoring import (
     evaluate_result_oriented,
     evaluate_process_oriented,
+    evaluate_combined,
     decide_passed,
     build_eval_prompt,
 )
@@ -182,3 +183,57 @@ class TestBuildEvalPrompt:
         assert "REST endpoints" in prompt
         assert "GET /users" in prompt
         assert "200 OK" in prompt
+
+
+class TestEvaluateCombined:
+    """测试 combined 模式（结果+过程联合评估）。"""
+
+    def test_both_pass(self):
+        item = {"expected_output": "SUCCESS"}
+        trace = [{"phase": "planner"}, {"phase": "executor"}]
+        passed, detail = evaluate_combined("SUCCESS output", item, [], trace)
+        assert passed is True
+        assert detail["result_passed"] is True
+        assert detail["process_passed"] is True
+
+    def test_result_fails_process_passes(self):
+        # Process passes when no expected_output and no errors and >= 2 trace steps
+        trace = [{"phase": "planner"}, {"phase": "executor"}]
+        passed, detail = evaluate_combined("any answer", {}, [], trace)
+        assert passed is True
+        assert detail["result_passed"] is True  # no expected_output → result passes
+        assert detail["process_passed"] is True
+
+    def test_result_passes_process_fails(self):
+        item = {"expected_output": "found"}
+        trace = [{"phase": "planner"}]  # only 1 step → process fails
+        passed, detail = evaluate_combined("found", item, [], trace)
+        assert passed is False
+        assert detail["result_passed"] is True
+        assert detail["process_passed"] is False
+
+    def test_both_fail(self):
+        item = {"expected_output": "X"}
+        trace = [{"phase": "planner"}]
+        passed, detail = evaluate_combined("Y", item, [{"error": True}], trace)
+        assert passed is False
+        assert detail["result_passed"] is False
+        assert detail["process_passed"] is False
+
+
+class TestDecidePassedCombined:
+    """测试 decide_passed 分发到 combined 模式。"""
+
+    def test_combined_method_delegates(self):
+        item = {"expected_output": "yes"}
+        trace = [{"phase": "p"}, {"phase": "e"}]
+        passed, detail = decide_passed("combined", "yes answer", item, [], trace)
+        assert passed is True
+        assert "result_check" in detail
+        assert "process_check" in detail
+
+    def test_combined_method_fails(self):
+        item = {"expected_output": "no_match"}
+        trace = [{"phase": "p"}]
+        passed, detail = decide_passed("combined", "nope", item, [{"error": "x"}], trace)
+        assert passed is False
