@@ -1,4 +1,4 @@
-# 对接 OpenAI 的相关接口，包含代码文件的推演逻辑
+﻿# 对接 OpenAI 的相关接口，包含代码文件的推演逻辑
 import json
 import os
 import re
@@ -15,10 +15,32 @@ load_dotenv()
 
 PLAN_MAX_STEPS = 20
 
-client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY"),
-    base_url=os.environ.get("OPENAI_BASE_URL")
-)
+_client: Optional[OpenAI] = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is not None:
+        return _client
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured. "
+            "Set the OPENAI_API_KEY environment variable before calling any LLM function."
+        )
+    _client = OpenAI(
+        api_key=api_key,
+        base_url=os.environ.get("OPENAI_BASE_URL")
+    )
+    return _client
+
+
+class _ClientProxy:
+    def __getattr__(self, name):
+        return getattr(_get_client(), name)
+
+
+client = _ClientProxy()
 
 
 def fallback_session_title(message: str) -> str:
@@ -34,7 +56,7 @@ def generate_session_title(message: str) -> str:
     if not (message or "").strip():
         return fallback
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=get_effective_model(),
             messages=[
                 {
@@ -58,8 +80,18 @@ def generate_session_title(message: str) -> str:
         return fallback
 
 
+def get_embeddings(texts: List[str]) -> List[List[float]]:
+    """调用 OpenAI 兼容的 Embedding API 对文本列表进行向量化（供 RAG 使用）。"""
+    from agent.backend.config import RAG_EMBEDDING_MODEL
+    response = _get_client().embeddings.create(
+        model=RAG_EMBEDDING_MODEL,
+        input=texts,
+    )
+    return [item.embedding for item in response.data]
+
+
 def llm_json(system_prompt: str, user_prompt: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    response = client.chat.completions.create(
+    response = _get_client().chat.completions.create(
         model=get_effective_model(),
         response_format={"type": "json_object"},
         messages=[
@@ -140,9 +172,24 @@ def create_plan(
             if state is not None:
                 state["task_difficulty"] = difficulty
             log_state(trace, "plan_difficulty", difficulty)
+
+        # Extract task_type from LLM output
+        task_type = str(data.get("task_type", "")).strip().lower()
+        if task_type and state is not None:
+            state["task_type"] = task_type
+            log_state(trace, "plan_task_type", task_type)
+
+        # Extract acceptance_criteria from LLM output
+        criteria = data.get("acceptance_criteria", [])
+        if isinstance(criteria, list) and criteria and state is not None:
+            state["acceptance_criteria"] = [str(c).strip() for c in criteria if str(c).strip()]
+
         steps = data.get("steps", [])
         if not isinstance(steps, list) or not steps:
             return [task]
+        # Save raw structured steps to state before converting to strings
+        if state is not None and isinstance(steps, list):
+            state["_structured_steps"] = steps
         result = [_normalize_plan_step(s) for s in steps[:PLAN_MAX_STEPS]]
         result = [s for s in result if s]
         log_state(trace, "plan_result", "\n".join(f"{i + 1}. {s}" for i, s in enumerate(result)))
@@ -258,3 +305,135 @@ def extract_code_context(target_file: str, workspace_dir: str) -> str:
             return safe_trim(f.read(), 6000)
     except Exception as e:
         return f"[code_context unavailable: {e}]"
+
+
+# ── Executor Prompt ──
+def build_executor_prompt(current_step, step_index, total_steps, state):
+    prompts_config = load_prompts()
+    executor_cfg = prompts_config.get("executor_prompt", {})
+    template = executor_cfg.get("template", "当前执行步骤：{step_goal}")
+    criteria = "\n".join(f"- {c}" for c in state.get("acceptance_criteria", [])[:6]) or "没有设定验收标准"
+    codebase_summary = safe_trim(state.get("codebase_summary", ""), 1600) or "无代码结构摘要"
+    retrieved = "\n\n".join(
+        f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
+        for item in state.get("retrieved_context", [])[:4] if isinstance(item, dict)
+    ) or "无检索结果"
+    tool_history = "\n".join(safe_trim(json.dumps(t, ensure_ascii=False), 400) for t in state.get("tool_history", [])[-3:]) or "无工具调用记录"
+    return template.format(
+        step_id=step_index, total_steps=total_steps,
+        step_goal=current_step.get("goal", ""),
+        step_verification=current_step.get("verification", ""),
+        task_type=state.get("task_type", "coding"),
+        task_difficulty=state.get("task_difficulty", "unknown"),
+        acceptance_criteria=criteria, codebase_summary=codebase_summary,
+        retrieved_context=retrieved, tool_history=tool_history,
+    )
+
+
+# ── Verifier Prompt ──
+def build_verifier_prompt(current_step, state):
+    prompts_config = load_prompts()
+    verifier_cfg = prompts_config.get("verifier_prompt", {})
+    template = verifier_cfg.get("template", "Step: {step_goal}\nTool: {tool_status}")
+    step_goal = current_step.get("goal", "")
+    tool_result = state.get("last_tool_result", {}) or {}
+    execution = state.get("last_execution", {}) or {}
+    tool_status = tool_result.get("status", "none")
+    if execution:
+        tool_status = "success" if execution.get("returncode") == 0 else "error"
+    returncode = execution.get("returncode") if execution else tool_result.get("returncode", "none")
+    criteria = "\n".join(f"- {c}" for c in state.get("acceptance_criteria", [])[:6]) or "无验收标准"
+    output = str(tool_result.get("output", "") or execution.get("output", "") or "")
+    modified = ", ".join(state.get("modified_files", [])[-8:]) or "无"
+    return template.format(
+        task_type=state.get("task_type", "coding"),
+        step_goal=step_goal, step_index=state.get("current_task_index", 0),
+        acceptance_criteria=criteria, tool_status=tool_status,
+        returncode=returncode, stdout_len=len(str(tool_result.get("stdout", ""))),
+        stderr_len=len(str(tool_result.get("stderr", ""))),
+        output_summary=safe_trim(output, 600),
+        modified_files=modified, modified_files_count=len(state.get("modified_files", [])),
+        task_difficulty=state.get("task_difficulty", "unknown"),
+    )
+
+
+def verifier_llm_check(current_step, state):
+    prompts_config = load_prompts()
+    verifier_cfg = prompts_config.get("verifier_prompt", {})
+    system_prompt = verifier_cfg.get("system", "你是一个严谨的 Verifier。")
+    user_prompt = build_verifier_prompt(current_step, state)
+    try:
+        data = llm_json(system_prompt, user_prompt, state)
+        return {
+            "failed": bool(data.get("failed", False)),
+            "reason": str(data.get("reason", "")),
+            "needs_repair": bool(data.get("needs_repair", False)),
+            "repair_suggestion": str(data.get("repair_suggestion", "")),
+            "more_steps_remaining": bool(data.get("more_steps_remaining", False)),
+            "task_fully_done": bool(data.get("task_fully_done", False)),
+        }
+    except Exception as e:
+        log_state(state.get("trace", []), "verifier_llm_error", str(e))
+        return {
+            "failed": False, "reason": f"LLM verifier error: {e}",
+            "needs_repair": False, "repair_suggestion": "",
+            "more_steps_remaining": False, "task_fully_done": False,
+        }
+
+
+# ── Final Summary Prompt ──
+def build_final_summary(state):
+    prompts_config = load_prompts()
+    summary_cfg = prompts_config.get("final_summary_prompt", {})
+    system_prompt = summary_cfg.get("system", "你是一个 Final Summarizer。")
+    template = summary_cfg.get("template", "Task: {task}")
+    used_tools = ", ".join(sorted(set(state.get("used_tools", [])))) or "无"
+    modified = ", ".join(state.get("modified_files", [])[-8:]) or "无"
+    v_results = state.get("verification_results", []) or []
+    v_summary = "\n".join(
+        f"  - 步骤{r.get('step_index', '?')}: {'通过' if not r.get('failed') else '失败'} ({r.get('reason', '')})"
+        for r in v_results
+    ) or "无验证记录"
+    execution_log = "\n".join(state.get("result_history", [])[-8:]) or "无执行记录"
+    repair_count = state.get("retry_count", 0)
+    repair_log = (f"修复次数: {repair_count}\n自修正次数: {state.get('reflections', 0)}") if repair_count > 0 or state.get("reflections", 0) > 0 else "无修复"
+    plan = state.get("current_plan", []) or []
+    total = len(plan)
+    done = sum(1 for s in plan if isinstance(s, dict) and s.get("status") == "done")
+    user_prompt = template.format(
+        task=state.get("task", ""), task_type=state.get("task_type", "unknown"),
+        task_difficulty=state.get("task_difficulty", "unknown"),
+        total_plan_steps=total, completed_steps=done,
+        status=state.get("status", "unknown"), used_tools=used_tools,
+        modified_files=modified, verification_summary=v_summary,
+        execution_log=execution_log, repair_log=repair_log,
+    )
+    try:
+        from agent.backend.config import get_effective_model
+        response = _get_client().chat.completions.create(
+            model=get_effective_model(),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3, max_tokens=1500,
+        )
+        summary = (response.choices[0].message.content or "").strip()
+        record_llm_usage(state, response)
+        return summary or _fallback_summary(state)
+    except Exception as e:
+        log_state(state.get("trace", []), "final_summary_error", str(e))
+        return _fallback_summary(state)
+
+
+def _fallback_summary(state):
+    modified = ", ".join(state.get("modified_files", [])[-8:]) or "无"
+    status = state.get("status", "unknown")
+    task_type = state.get("task_type", "unknown")
+    failure = state.get("failure_reason", "")
+    parts = [f"任务类型: {task_type}", f"最终状态: {status}", f"修改文件: {modified}"]
+    if failure:
+        parts.append(f"失败原因: {failure}")
+    used = sorted(set(state.get("used_tools", [])))
+    parts.append(f"工具调用: {', '.join(used) or '无'}")
+    return "\n".join(parts)

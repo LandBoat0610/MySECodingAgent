@@ -45,3 +45,11 @@ class AgentState(TypedDict, total=False):
     modified_files: List[str]
     eval_mode: bool
     runtime_metrics: Dict[str, Any]
+    # RAG 知识增强
+    rag_sources: List[Dict[str, Any]]
+    # 跨对话记忆与上下文工程
+    session_summary: str
+    project_memory: str
+    user_preferences: str
+    relevant_history: List[Dict[str, Any]]
+    context_budget: int

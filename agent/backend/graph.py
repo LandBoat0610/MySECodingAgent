@@ -1,4 +1,4 @@
-# 这里组装各个拆分出来的模块生成核心的生命周期图
+﻿# 这里组装各个拆分出来的模块生成核心的生命周期图
 import json
 import os
 import re
@@ -23,9 +23,14 @@ from agent.backend.config import (
 )
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
-from agent.backend.llm import client, build_system_prompt, create_plan, infer_coding_targets, extract_code_context
+from agent.backend.llm import client, build_system_prompt, build_executor_prompt, build_final_summary, create_plan, infer_coding_targets, extract_code_context
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
+from agent.backend.session_manager import (
+    get_memory_context,
+    generate_and_save_session_summary,
+    save_project_memory,
+)
 
 import time
 from agent.backend.database import get_connection
@@ -76,13 +81,15 @@ def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
         if isinstance(step, dict):
             goal = str(step.get("goal") or step.get("description") or step.get("step") or "").strip()
             action = str(step.get("action") or "execute").strip()
-            verification = str(step.get("verification") or step.get("expected_result") or "").strip()
+            expected_result = str(step.get("expected_result") or "").strip()
+            verification = str(step.get("verification") or expected_result or "").strip()
             files = step.get("files_to_inspect") or step.get("files") or []
             if isinstance(files, str):
                 files = [files]
         else:
             goal = str(step or "").strip()
             action = "execute"
+            expected_result = ""
             verification = ""
             files = []
         normalized.append({
@@ -91,6 +98,7 @@ def _normalize_step_objects(steps: List[Any]) -> List[Dict[str, Any]]:
             "action": action,
             "files_to_inspect": files if isinstance(files, list) else [],
             "verification": verification,
+            "expected_result": expected_result if isinstance(step, dict) else "",
             "status": "pending",
         })
     return normalized
@@ -214,6 +222,97 @@ def _build_retrieved_context(workspace_dir: str, relevant_files: List[str]) -> L
     return contexts
 
 
+def _legacy_mojibake_task_should_use_rag(task: str, step_task: str = "") -> bool:
+    text = f"{task or ''}\n{step_task or ''}".lower()
+    rag_markers = (
+        "rag_search",
+        "rag",
+        "knowledge base",
+        "project knowledge",
+        "internal docs",
+        "existing materials",
+        "readme",
+        "docs",
+        "release command",
+        "知识库",
+        "项目文档",
+        "已有资料",
+        "内部资料",
+        "内部代码",
+        "发布口令",
+        "发布命令",
+        "根据项目",
+        "根据知识",
+        "文档",
+    )
+    simple_math = re.fullmatch(
+        r"[\s\d\+\-\*/×xX÷\(\)\.，,。只返回直接计算calculate算一下请]+",
+        text,
+    )
+    return any(marker in text for marker in rag_markers) and not bool(simple_math)
+
+
+def _task_should_use_rag(task: str, step_task: str = "") -> bool:
+    text = f"{task or ''}\n{step_task or ''}".lower()
+    rag_markers = (
+        "rag_search",
+        "rag",
+        "knowledge base",
+        "project knowledge",
+        "internal docs",
+        "existing materials",
+        "readme",
+        "docs",
+        "release command",
+        "\u77e5\u8bc6\u5e93",        # 知识库
+        "\u9879\u76ee\u6587\u6863",  # 项目文档
+        "\u5df2\u6709\u8d44\u6599",  # 已有资料
+        "\u5185\u90e8\u8d44\u6599",  # 内部资料
+        "\u5185\u90e8\u4ee3\u7801",  # 内部代码
+        "\u53d1\u5e03\u53e3\u4ee4",  # 发布口令
+        "\u53d1\u5e03\u547d\u4ee4",  # 发布命令
+        "\u6839\u636e\u9879\u76ee",  # 根据项目
+        "\u6839\u636e\u77e5\u8bc6",  # 根据知识
+        "\u6587\u6863",              # 文档
+    )
+    simple_math = re.fullmatch(
+        r"[\s\d\+\-\*/\u00d7xX\u00f7\(\)\.,，。\u53ea\u8fd4\u56de"
+        r"\u76f4\u63a5\u8ba1\u7b97calculate\u7b97\u4e00\u4e0b\u8bf7]+",
+        text,
+    )
+    return any(marker in text for marker in rag_markers) and not bool(simple_math)
+
+
+def _append_rag_results_to_state(state: AgentState, parsed_result: Dict[str, Any]) -> None:
+    try:
+        payload = json.loads(parsed_result.get("output") or "{}")
+    except Exception:
+        payload = {}
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return
+
+    context = state.setdefault("retrieved_context", [])
+    if not isinstance(context, list):
+        context = []
+        state["retrieved_context"] = context
+    sources = state.setdefault("rag_sources", [])
+    if not isinstance(sources, list):
+        sources = []
+        state["rag_sources"] = sources
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            "source": item.get("source", "unknown"),
+            "content": item.get("content", ""),
+            "score": item.get("score"),
+        }
+        context.append(entry)
+        sources.append(entry)
+
+
 def _infer_test_commands(state: AgentState) -> List[str]:
     commands = []
     run_command = str(state.get("run_command") or "").strip()
@@ -244,7 +343,7 @@ def planner_node(state: AgentState) -> AgentState:
     targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
 
     state["task_list"] = steps
-    state["current_plan"] = _normalize_step_objects(steps)
+    state["current_plan"] = _normalize_step_objects(state.get("_structured_steps") or steps)
     state["current_task_index"] = 0
     state["current_task"] = steps[0] if steps else state["task"]
     state["target_file"] = targets["target_file"]
@@ -288,7 +387,7 @@ def planner_node(state: AgentState) -> AgentState:
             steps = create_plan(state["task"], state.get("memory", ""), trace, state)
             targets = infer_coding_targets(state["task"], state["workspace_dir"], trace, state)
             state["task_list"] = steps
-            state["current_plan"] = _normalize_step_objects(steps)
+            state["current_plan"] = _normalize_step_objects(state.get("_structured_steps") or steps)
             state["current_task_index"] = 0
             state["current_task"] = steps[0] if steps else state["task"]
             state["target_file"] = targets["target_file"]
@@ -362,6 +461,23 @@ def context_builder_node(state: AgentState) -> AgentState:
     state.setdefault("failure_reason", "")
 
     workspace_files = _collect_workspace_files(workspace_dir, limit=40)
+
+    # 跨对话记忆与上下文工程
+    project_id = state.get("project_id", "")
+    if project_id:
+        memory_ctx = get_memory_context(project_id, session_id)
+        state["session_summary"] = str(memory_ctx.get("session_summary", ""))
+        state["project_memory"] = str(memory_ctx.get("project_memory", ""))
+        state["user_preferences"] = str(memory_ctx.get("user_preferences", ""))
+        state["relevant_history"] = memory_ctx.get("relevant_history", [])
+        state["context_budget"] = int(memory_ctx.get("context_budget", 12000))
+    else:
+        state.setdefault("session_summary", "")
+        state.setdefault("project_memory", "")
+        state.setdefault("user_preferences", "")
+        state.setdefault("relevant_history", [])
+        state.setdefault("context_budget", 12000)
+
     state["codebase_summary"] = (
         f"Task type: {task_type}\n"
         f"Relevant files: {', '.join(relevant_files) if relevant_files else 'not found'}\n"
@@ -520,30 +636,27 @@ def executor_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id")
     messages = state["messages"]
     step_task = state.get("current_task", state["task"])
-    system_prompt = build_system_prompt(state.get("memory", ""), state["workspace_dir"])
+    # 组装完整记忆上下文：旧记忆 + 跨对话记忆
+    full_memory_parts = [state.get("memory", "")]
+    if state.get("project_memory"):
+        full_memory_parts.append(f"【项目记忆】\n{state['project_memory']}")
+    if state.get("session_summary"):
+        full_memory_parts.append(f"【会话摘要】\n{state['session_summary']}")
+    if state.get("user_preferences"):
+        full_memory_parts.append(f"【用户偏好】\n{state['user_preferences']}")
+    if state.get("context_budget"):
+        full_memory_parts.append(f"【上下文预算】当前可用 {state['context_budget']} tokens")
+    system_prompt = build_system_prompt("\n\n".join(filter(None, full_memory_parts)), state["workspace_dir"])
     tools_module.CURRENT_WORKSPACE_DIR = state["workspace_dir"]
 
     messages.append({"role": "system", "content": system_prompt})
-    context_summary = safe_trim(state.get("codebase_summary", ""), 1600)
-    retrieved_context = "\n\n".join(
-        f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
-        for item in state.get("retrieved_context", [])[:4]
-        if isinstance(item, dict)
-    )
-    criteria = "\n".join(f"- {item}" for item in state.get("acceptance_criteria", [])[:6])
-    step_context = (
-        f"Current step: {step_task}\n\n"
-        f"Task type: {state.get('task_type', 'coding')}\n\n"
-        f"Acceptance criteria:\n{criteria or '- Complete the user request accurately.'}\n\n"
-        f"Codebase context:\n{context_summary or 'No context summary available.'}\n\n"
-        f"Retrieved snippets:\n{safe_trim(retrieved_context, 2800) or 'No snippets available.'}\n\n"
-        f"IMPORTANT: Execute ONLY the minimum actions needed for this step. "
-        f"For coding tasks, inspect relevant files before modifying them and verify the result when possible. "
-        f"If the step is already done (e.g. the file already exists and works), "
-        f"just respond with a brief summary without calling any tools. "
-        f"Do NOT create extra files or do extra work beyond this step. "
-        f"When this step is complete, stop calling tools and give a short text summary."
-    )
+    # 使用结构化 Executor 提示词（来自 prompts.yaml executor_prompt）
+    current_step = {"goal": step_task, "verification": ""}
+    plan = state.get("current_plan", [])
+    step_idx = state.get("current_task_index", 0)
+    if isinstance(plan, list) and step_idx < len(plan) and isinstance(plan[step_idx], dict):
+        current_step = plan[step_idx]
+    step_context = build_executor_prompt(current_step, step_idx + 1, len(plan), state)
     messages.append({"role": "user", "content": step_context})
     action_log: List[Dict[str, Any]] = []
 
@@ -554,6 +667,10 @@ def executor_node(state: AgentState) -> AgentState:
 
     iteration = 0
     current_iteration_limit = step_iteration_limit
+    should_force_initial_rag = (
+        _task_should_use_rag(state.get("task", ""), step_task)
+        and "rag_search" not in state.get("used_tools", [])
+    )
     while True:
         if iteration >= current_iteration_limit:
             if not session_id:
@@ -617,7 +734,11 @@ def executor_node(state: AgentState) -> AgentState:
         log_state(trace, "reason", f"Step '{step_task}' iteration {iteration + 1}", session_id=session_id, state=state)
         iteration += 1
         try:
-            response = client.chat.completions.create(model=get_effective_model(), messages=messages, tools=tools)
+            request_args = {"model": get_effective_model(), "messages": messages, "tools": tools}
+            if should_force_initial_rag:
+                request_args["tool_choice"] = {"type": "function", "function": {"name": "rag_search"}}
+                should_force_initial_rag = False
+            response = client.chat.completions.create(**request_args)
             record_llm_usage(state, response)
         except Exception as e:
             state["last_tool_result"] = {"status": "error", "output": f"LLM call failed: {e}", "returncode": None}
@@ -714,6 +835,8 @@ def executor_node(state: AgentState) -> AgentState:
                     "status": parsed_result.get("status"),
                     "summary": parsed_result.get("summary") or parsed_result.get("output"),
                 })
+            if function_name == "rag_search" and parsed_result.get("status") != "error":
+                _append_rag_results_to_state(state, parsed_result)
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
             log_state(trace, "observe", result_text, session_id=session_id, state=state)
             state["last_tool_result"] = parsed_result
@@ -957,24 +1080,22 @@ def finalize_node(state: AgentState) -> AgentState:
     latest_verification = verification_results[-1] if verification_results else {}
     context_files = ", ".join(state.get("relevant_files", [])[:8]) or "none"
     modified_files = ", ".join(state.get("modified_files", [])[-8:]) or "none"
-    final_summary = (
-        f"Overall task: {state['task']}\n\n"
-        f"Task type: {state.get('task_type', 'unknown')}\n"
-        f"Used tools: {', '.join(used_tools) if used_tools else 'none'}\n"
-        f"Reflections/self-corrections: {state.get('reflections', 0)}\n"
-        f"Repair retries: {state.get('retry_count', 0)}\n"
-        f"Target file: {state.get('target_file', '')}\n"
-        f"Run command: {state.get('run_command', '')}\n\n"
-        f"Relevant files: {context_files}\n"
-        f"Modified files: {modified_files}\n"
-        f"Latest verification: {safe_trim(json.dumps(latest_verification, ensure_ascii=False), 1200)}\n\n"
-        f"Step results:\n{safe_trim(result_history, 5000)}\n\n"
-        f"Final status: {state.get('status', 'unknown')}"
-    )
-    state["final_answer"] = final_summary
+    state["final_answer"] = build_final_summary(state)
+    final_summary = state["final_answer"]
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
     if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
+        # 跨对话记忆：保存会话摘要和项目记忆
+        project_id = state.get("project_id", "")
+        if project_id and session_id:
+            try:
+                generate_and_save_session_summary(
+                    session_id, project_id, state["task"], final_summary
+                )
+                # 自动提取并保存项目级关键信息
+                _auto_extract_project_memory(state, project_id)
+            except Exception:
+                pass
 
     if session_id:
         from agent.backend.utils import update_session_state
@@ -1021,6 +1142,46 @@ def next_step_node(state: AgentState) -> AgentState:
     return state
 
 # Graph execution
+
+
+def _auto_extract_project_memory(state: AgentState, project_id: str) -> None:
+    """自动从 Agent 执行结果中提取项目级关键信息并保存。
+
+    提取内容：成功的测试命令、启动命令、已知问题。
+    """
+    try:
+        # 提取测试命令
+        test_commands = state.get("test_commands", [])
+        if test_commands:
+            for cmd in test_commands[:3]:
+                save_project_memory(
+                    project_id, f"test_cmd_{cmd[:30]}", cmd, "commands"
+                )
+
+        # 提取使用的工具列表作为项目能力记录
+        used_tools = state.get("used_tools", [])
+        if used_tools:
+            save_project_memory(
+                project_id,
+                "agent_capabilities",
+                f"Agent supports: {', '.join(sorted(set(used_tools)))}",
+                "capabilities",
+            )
+
+        # 提取验证结果
+        verification = state.get("verification_results", [])
+        if verification:
+            latest = verification[-1]
+            if isinstance(latest, dict):
+                if latest.get("status") == "error":
+                    save_project_memory(
+                        project_id,
+                        "last_known_issue",
+                        json.dumps(latest, ensure_ascii=False)[:500],
+                        "known_issues",
+                    )
+    except Exception:
+        pass
 
 
 def build_graph():
