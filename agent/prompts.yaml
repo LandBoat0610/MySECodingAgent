@@ -75,21 +75,21 @@ planner_prompt:
         - verification: 验证方式描述
 
     示例输出：
-    {
+    {{
       "task_type": "bug_fix",
       "difficulty": "medium",
       "acceptance_criteria": ["相关测试通过", "修改不影响现有功能"],
       "steps": [
-        {
+        {{
           "id": 1,
           "goal": "定位相关代码",
           "action": "inspect_code",
           "files_to_inspect": [],
           "expected_result": "找到问题所在文件",
           "verification": "确认后续需要修改的代码位置"
-        }
+        }}
       ]
-    }
+    }}
 
     当前用户的需求是：
     {user_task}
