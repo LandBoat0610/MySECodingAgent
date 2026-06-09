@@ -3,15 +3,13 @@
 """
 
 import os
-import sys
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_BASE_URL", "https://test.example.com/v1")
 
-from agent.backend import database
-from agent.backend.database import init_db, get_connection
+from agent.backend import database  # noqa: E402
+from agent.backend.database import init_db  # noqa: E402
 
 
 @pytest.fixture
@@ -30,8 +28,13 @@ class TestContextFormat:
         from agent.backend.session_manager import get_memory_context
         ctx = get_memory_context("proj_test", "sess_test")
         assert isinstance(ctx, dict)
-        for key in ("session_summary", "project_memory", "user_preferences",
-                     "relevant_history", "context_budget"):
+        for key in (
+            "session_summary",
+            "project_memory",
+            "user_preferences",
+            "relevant_history",
+            "context_budget",
+        ):
             assert key in ctx
         assert ctx["context_budget"] > 0
 

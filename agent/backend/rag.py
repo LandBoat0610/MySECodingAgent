@@ -413,7 +413,7 @@ def ingest_documents(doc_paths: List[str]) -> Dict[str, Any]:
     added = 0
 
     for start in range(0, len(all_chunks), batch_size):
-        batch = all_chunks[start : start + batch_size]
+        batch = all_chunks[start:start + batch_size]
 
         texts = [chunk["content"] for chunk in batch]
         ids = [_build_chunk_id(chunk) for chunk in batch]

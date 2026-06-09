@@ -68,6 +68,7 @@ export const useAgentStore = defineStore('agent', () => {
   /** 多轮对话追踪 */
   const completedRounds = ref([])     // [{userMessage, traceLogs, plans, finalAnswer}]
   const currentRoundUserMsg = ref('') // 当前轮次用户输入
+  const currentRoundId = ref('')      // 当前轮次 ID，用于隔离本轮计划
   const prevRoundPlanIds = ref(new Set()) // 上一轮已归档的 plan ID 集合
   const roundsCursor = ref(null)
   const roundsHasMore = ref(false)
@@ -98,7 +99,11 @@ export const useAgentStore = defineStore('agent', () => {
     if (!q) return sessions.value
     return sessions.value.filter(s => String(s.title || '').toLowerCase().includes(q))
   })
-  const pendingPlans = computed(() => plans.value.filter(p => p.status === 'pending'))
+  const currentRoundPlans = computed(() => {
+    if (!currentRoundId.value) return plans.value
+    return plans.value.filter(p => (p.round_id || '') === currentRoundId.value)
+  })
+  const pendingPlans = computed(() => currentRoundPlans.value.filter(p => p.status === 'pending'))
   const pendingCommandApproval = computed(() => {
     const pending = stateSnapshot.value?.pending_tool_approval
     return pending && pending.status === 'pending' ? pending : null
@@ -192,6 +197,7 @@ export const useAgentStore = defineStore('agent', () => {
     agentRunStartedAt.value = null
     completedRounds.value = []
     currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
     prevRoundPlanIds.value = new Set()
     resetRoundPaging()
     resetLivePerfForNewRun()
@@ -286,6 +292,7 @@ export const useAgentStore = defineStore('agent', () => {
         agentRunning.value = false
         completedRounds.value = []
         currentRoundUserMsg.value = ''
+        currentRoundId.value = ''
         prevRoundPlanIds.value = new Set()
         resetRoundPaging()
         resetLivePerfForNewRun()
@@ -312,6 +319,7 @@ export const useAgentStore = defineStore('agent', () => {
     agentRunStartedAt.value = null
     completedRounds.value = []
     currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
     prevRoundPlanIds.value = new Set()
     resetRoundPaging()
     resetLivePerfForNewRun()
@@ -330,6 +338,7 @@ export const useAgentStore = defineStore('agent', () => {
     agentRunStartedAt.value = null
     completedRounds.value = []
     currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
     prevRoundPlanIds.value = new Set()
     resetRoundPaging()
     resetLivePerfForNewRun()
@@ -342,6 +351,7 @@ export const useAgentStore = defineStore('agent', () => {
       const stateResp = await getSessionState(selectedProjectId.value, selectedSessionId.value)
       sessionStatus.value = stateResp.status
       stateSnapshot.value = stateResp.snapshot
+      currentRoundId.value = stateResp.snapshot?.current_round_id || currentRoundId.value || ''
 
       const msgs = stateResp.snapshot?.messages || []
       chatMessages.value = msgs
@@ -426,11 +436,13 @@ export const useAgentStore = defineStore('agent', () => {
     completedRounds.value = hasActiveRound ? mapped.slice(0, -1) : mapped
     if (hasActiveRound) {
       currentRoundUserMsg.value = last.userMessage
+      currentRoundId.value = last.id
       traceLogs.value = last.traceLogs
       plans.value = last.plans
       finalAnswer.value = last.finalAnswer
     } else {
       currentRoundUserMsg.value = ''
+      currentRoundId.value = ''
       traceLogs.value = []
       plans.value = []
       finalAnswer.value = ''
@@ -676,7 +688,7 @@ export const useAgentStore = defineStore('agent', () => {
       completedRounds.value.push({
         userMessage: currentRoundUserMsg.value,
         traceLogs: [...traceLogs.value],
-        plans: [...plans.value].filter(p => !prevRoundPlanIds.value.has(p.id)),
+        plans: [...currentRoundPlans.value].filter(p => !prevRoundPlanIds.value.has(p.id)),
         finalAnswer: finalAnswer.value,
       })
     }
@@ -688,17 +700,20 @@ export const useAgentStore = defineStore('agent', () => {
     plans.value = []
     stateSnapshot.value = null   // 清空旧快照，防止前端读到上一轮的 task_list / status
     currentRoundUserMsg.value = message
+    currentRoundId.value = ''
     agentRunStartedAt.value = null
     resetLivePerfForNewRun()
     chatMessages.value.push({ role: 'user', content: message })
     try {
       const resp = await sendChat(selectedProjectId.value, selectedSessionId.value, message)
+      currentRoundId.value = resp.round_id || currentRoundId.value
       sessionStatus.value = resp.status
       connectWebSocket()
       return resp
     } catch (e) {
       chatMessages.value.pop()
       currentRoundUserMsg.value = ''
+      currentRoundId.value = ''
       setError(e)
       throw e
     }
@@ -920,6 +935,7 @@ export const useAgentStore = defineStore('agent', () => {
     stateSnapshot,
     fileTree,
     plans,
+    currentRoundPlans,
     traceLogs,
     chatMessages,
     finalAnswer,
@@ -978,6 +994,7 @@ export const useAgentStore = defineStore('agent', () => {
     clearError,
     completedRounds,
     currentRoundUserMsg,
+    currentRoundId,
     prevRoundPlanIds,
     roundsHasMore,
     roundsLoadingOlder,

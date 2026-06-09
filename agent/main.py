@@ -49,6 +49,7 @@ from agent.backend.platform_settings import (
     get_agent_config,
     set_agent_config,
     get_tool_settings,
+    get_registered_tools,
     set_tool_settings,
     get_skills,
     create_skill,
@@ -107,13 +108,33 @@ def update_agent_config(req: AgentConfigUpdateRequest):
 @app.get("/settings/tools", response_model=ToolSettingsResponse)
 def read_tool_settings():
     settings = get_tool_settings()
-    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+    descriptions = {tool["name"]: tool.get("description", "") for tool in get_registered_tools()}
+    return ToolSettingsResponse(
+        tools=[
+            {
+                "name": name,
+                "enabled": enabled,
+                "description": descriptions.get(name, ""),
+            }
+            for name, enabled in settings.items()
+        ]
+    )
 
 
 @app.put("/settings/tools", response_model=ToolSettingsResponse)
 def update_tool_settings(req: ToolSettingsUpdateRequest):
     settings = set_tool_settings(req.tools)
-    return ToolSettingsResponse(tools=[{"name": name, "enabled": enabled} for name, enabled in settings.items()])
+    descriptions = {tool["name"]: tool.get("description", "") for tool in get_registered_tools()}
+    return ToolSettingsResponse(
+        tools=[
+            {
+                "name": name,
+                "enabled": enabled,
+                "description": descriptions.get(name, ""),
+            }
+            for name, enabled in settings.items()
+        ]
+    )
 
 
 @app.get("/settings/skills", response_model=SkillListResponse)

@@ -318,7 +318,13 @@ def build_executor_prompt(current_step, step_index, total_steps, state):
         f"[{item.get('source')}]\n{safe_trim(str(item.get('content') or item.get('error') or ''), 1200)}"
         for item in state.get("retrieved_context", [])[:4] if isinstance(item, dict)
     ) or "无检索结果"
-    tool_history = "\n".join(safe_trim(json.dumps(t, ensure_ascii=False), 400) for t in state.get("tool_history", [])[-3:]) or "无工具调用记录"
+    tool_history = (
+        "\n".join(
+            safe_trim(json.dumps(t, ensure_ascii=False), 400)
+            for t in state.get("tool_history", [])[-3:]
+        )
+        or "无工具调用记录"
+    )
     return template.format(
         step_id=step_index, total_steps=total_steps,
         step_goal=current_step.get("goal", ""),
@@ -396,7 +402,11 @@ def build_final_summary(state):
     ) or "无验证记录"
     execution_log = "\n".join(state.get("result_history", [])[-8:]) or "无执行记录"
     repair_count = state.get("retry_count", 0)
-    repair_log = (f"修复次数: {repair_count}\n自修正次数: {state.get('reflections', 0)}") if repair_count > 0 or state.get("reflections", 0) > 0 else "无修复"
+    repair_log = (
+        f"修复次数: {repair_count}\n自修正次数: {state.get('reflections', 0)}"
+        if repair_count > 0 or state.get("reflections", 0) > 0
+        else "无修复"
+    )
     plan = state.get("current_plan", []) or []
     total = len(plan)
     done = sum(1 for s in plan if isinstance(s, dict) and s.get("status") == "done")

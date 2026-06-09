@@ -110,7 +110,7 @@
       </div>
       <div v-if="!toolsCollapsed" class="tool-list">
         <label v-for="tool in store.toolSettings" :key="tool.name" class="tool-item">
-          <span class="tool-name">{{ toolLabel(tool.name) }}</span>
+          <span class="tool-name" :title="tool.description || tool.name">{{ toolLabel(tool) }}</span>
           <input
             type="checkbox"
             :checked="tool.enabled"
@@ -129,25 +129,25 @@
           <span class="panel-chevron">{{ skillsCollapsed ? '▸' : '▾' }}</span>
           <span class="panel-title">Skills</span>
         </button>
-        <button class="btn-icon" @click="startNewSkill" title="Add Skill">+</button>
+        <button class="btn-icon" @click="startNewSkill" title="添加 Skill">+</button>
       </div>
       <div v-if="!skillsCollapsed" class="skill-list">
         <form v-if="editingSkillId === '__new__'" class="skill-form" @submit.prevent="saveSkill">
-          <input v-model="skillName" placeholder="Skill name..." />
-          <textarea v-model="skillContent" rows="4" placeholder="Skill instructions..."></textarea>
+          <input v-model="skillName" placeholder="Skill 名称..." />
+          <textarea v-model="skillContent" rows="4" placeholder="填写 Skill 指令，例如：处理代码审查任务时，先检查潜在 bug 和缺失测试。"></textarea>
           <div class="form-actions">
-            <button class="btn btn-sm btn-primary" :disabled="!skillName.trim() || !skillContent.trim()">Save</button>
-            <button type="button" class="btn btn-sm btn-ghost" @click="cancelSkillEdit">Cancel</button>
+            <button class="btn btn-sm btn-primary" :disabled="!skillName.trim() || !skillContent.trim()">保存</button>
+            <button type="button" class="btn btn-sm btn-ghost" @click="cancelSkillEdit">取消</button>
           </div>
         </form>
 
         <div v-for="skill in store.skills" :key="skill.id" class="skill-item">
           <form v-if="editingSkillId === skill.id" class="skill-form" @submit.prevent="saveSkill">
-            <input v-model="skillName" placeholder="Skill name..." />
-            <textarea v-model="skillContent" rows="4" placeholder="Skill instructions..."></textarea>
+            <input v-model="skillName" placeholder="Skill 名称..." />
+            <textarea v-model="skillContent" rows="4" placeholder="填写 Skill 指令..."></textarea>
             <div class="form-actions">
-              <button class="btn btn-sm btn-primary" :disabled="!skillName.trim() || !skillContent.trim()">Save</button>
-              <button type="button" class="btn btn-sm btn-ghost" @click="cancelSkillEdit">Cancel</button>
+              <button class="btn btn-sm btn-primary" :disabled="!skillName.trim() || !skillContent.trim()">保存</button>
+              <button type="button" class="btn btn-sm btn-ghost" @click="cancelSkillEdit">取消</button>
             </div>
           </form>
           <template v-else>
@@ -161,15 +161,15 @@
                 <span class="skill-name">{{ skill.name }}</span>
               </label>
               <div class="skill-actions">
-                <button class="btn-mini" @click="startEditSkill(skill)" title="Edit Skill">✎</button>
-                <button class="btn-mini danger" @click="handleDeleteSkill(skill)" title="Delete Skill">×</button>
+                <button class="btn-mini" @click="startEditSkill(skill)" title="编辑 Skill">✎</button>
+                <button class="btn-mini danger" @click="handleDeleteSkill(skill)" title="删除 Skill">×</button>
               </div>
             </div>
             <div class="skill-preview">{{ skill.content }}</div>
           </template>
         </div>
         <div v-if="!store.skills.length && !store.skillsLoading && editingSkillId !== '__new__'" class="empty-hint">
-          No skills. Add one above.
+          暂无 Skill，点击上方 + 添加。
         </div>
       </div>
     </div>
@@ -334,15 +334,25 @@ async function handleDeleteSkill(skill) {
   }
 }
 
-function toolLabel(name) {
+function toolLabel(tool) {
+  const name = typeof tool === 'string' ? tool : tool.name
   const labels = {
-    execute_bash: 'Bash',
-    read_file: 'Read File',
-    write_file: 'Write File',
-    web_search: 'Web Search',
-    fetch_url: 'Fetch URL',
+    execute_bash: '执行 Bash 命令',
+    list_files: '列出目录文件',
+    read_file_range: '按行读取文件',
+    read_file: '读取完整文件',
+    write_file: '写入文件',
+    apply_patch: '应用代码补丁',
+    search_code: '搜索代码',
+    get_git_diff: '查看 Git 差异',
+    run_tests: '运行测试',
+    run_lint: '运行代码检查',
+    web_search: '联网搜索',
+    fetch_url: '抓取网页内容',
+    rag_search: '检索知识库',
   }
-  return labels[name] || name
+  const description = labels[name] || (typeof tool === 'object' ? tool.description : '')
+  return description ? `${name} · ${description}` : name
 }
 
 function formatDate(iso) {

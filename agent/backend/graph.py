@@ -23,7 +23,15 @@ from agent.backend.config import (
 )
 from agent.backend.utils import log_state, parse_json_object, safe_trim, save_memory, tool_result
 from agent.backend.runtime_metrics import record_llm_usage, record_tool_call
-from agent.backend.llm import client, build_system_prompt, build_executor_prompt, build_final_summary, create_plan, infer_coding_targets, extract_code_context
+from agent.backend.llm import (
+    client,
+    build_system_prompt,
+    build_executor_prompt,
+    build_final_summary,
+    create_plan,
+    infer_coding_targets,
+    extract_code_context,
+)
 from agent.backend.tools import tools, available_functions, parse_tool_arguments
 import agent.backend.tools as tools_module
 from agent.backend.session_manager import (
@@ -1074,12 +1082,6 @@ def repair_node(state: AgentState) -> AgentState:
 def finalize_node(state: AgentState) -> AgentState:
     trace = state["trace"]
     session_id = state.get("session_id")
-    used_tools = sorted(set(state.get("used_tools", [])))
-    result_history = "\n\n".join(state.get("result_history", []))
-    verification_results = state.get("verification_results", [])
-    latest_verification = verification_results[-1] if verification_results else {}
-    context_files = ", ".join(state.get("relevant_files", [])[:8]) or "none"
-    modified_files = ", ".join(state.get("modified_files", [])[-8:]) or "none"
     state["final_answer"] = build_final_summary(state)
     final_summary = state["final_answer"]
     log_state(trace, "final", final_summary, session_id=session_id, state=state)

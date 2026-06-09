@@ -32,6 +32,8 @@ function createMockStore(overrides = {}) {
         roundsLoadingOlder: false,
         // 多轮模式相关（组件新增字段）
         plans: [],
+        currentRoundPlans: [],
+        currentRoundId: '',
         prevRoundPlanIds: new Set(),
         completedRounds: [],
         currentRoundUserMsg: '',
@@ -192,6 +194,23 @@ describe('ChatPanel.vue', () => {
             }))
             const wrapper = mount(ChatPanel)
             expect(wrapper.find('.agent-timeline').exists()).toBe(false)
+        })
+
+        it('should only render current round plans when plans from multiple rounds exist', () => {
+            useAgentStore.mockReturnValue(createMockStore({
+                currentRoundUserMsg: '当前任务',
+                currentRoundId: 'round-current',
+                plans: [
+                    { id: 'old-1', round_id: 'round-old', content: '旧轮计划', status: 'approved' },
+                    { id: 'cur-1', round_id: 'round-current', content: '当前轮计划', status: 'pending' },
+                ],
+                currentRoundPlans: [
+                    { id: 'cur-1', round_id: 'round-current', content: '当前轮计划', status: 'pending' },
+                ],
+            }))
+            const wrapper = mount(ChatPanel)
+            expect(wrapper.text()).toContain('当前轮计划')
+            expect(wrapper.text()).not.toContain('旧轮计划')
         })
     })
 

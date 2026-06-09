@@ -1,7 +1,4 @@
 """RAG 模块单元测试。"""
-import json
-import os
-import tempfile
 import uuid
 
 import pytest
@@ -164,7 +161,6 @@ class TestChromaIntegration:
     def test_get_rag_stats(self, tmp_path, monkeypatch):
         """统计信息应正常返回。"""
         from agent.backend.rag import get_rag_stats
-        import agent.backend.rag as rag_mod
         stats = get_rag_stats()
         assert stats["status"] == "ok"
         assert "chunk_count" in stats

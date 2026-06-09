@@ -148,6 +148,7 @@ class TestExtractCodeContext:
         result = extract_code_context("missing.py", workspace)
         assert "unavailable" in result or "error" in result.lower()
 
+
 class TestBuildExecutorPrompt:
     def test_build_with_step_info(self, monkeypatch):
         monkeypatch.setattr("agent.backend.llm.load_prompts", lambda: {
@@ -166,6 +167,7 @@ class TestBuildExecutorPrompt:
         result = build_executor_prompt(current_step, 1, 3, state)
         assert "Fix the bug" in result
         assert "bug_fix" in result
+
 
 class TestBuildVerifierPrompt:
     def test_build_verifier_prompt(self, monkeypatch):
@@ -186,6 +188,7 @@ class TestBuildVerifierPrompt:
         result = build_verifier_prompt({"goal": "Fix bug"}, state)
         assert "Fix bug" in result
 
+
 class TestBuildFinalSummary:
     def test_fallback_summary(self):
         from agent.backend.llm import _fallback_summary
@@ -198,7 +201,10 @@ class TestBuildFinalSummary:
         monkeypatch.setattr("agent.backend.llm.load_prompts", lambda: {
             "final_summary_prompt": {"system": "S", "template": "Task: {task}"}
         })
-        monkeypatch.setattr("agent.backend.llm._get_client", __import__("unittest").mock.MagicMock(side_effect=Exception("API error")))
+        monkeypatch.setattr(
+            "agent.backend.llm._get_client",
+            __import__("unittest").mock.MagicMock(side_effect=Exception("API error")),
+        )
         from agent.backend.llm import build_final_summary
         state = {"task": "Fix bug", "task_type": "bug_fix", "status": "completed",
                  "modified_files": ["main.py"], "used_tools": ["read_file"],

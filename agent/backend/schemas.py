@@ -50,6 +50,7 @@ class SessionActionResponse(BaseModel):
 class ToolSetting(BaseModel):
     name: str
     enabled: bool
+    description: Optional[str] = ""
 
 
 class ToolSettingsResponse(BaseModel):

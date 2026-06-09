@@ -138,7 +138,7 @@ class TestConfig:
 
     def test_get_effective_model_eval_override_takes_priority(self, monkeypatch):
         """评测覆盖优先于平台设置。"""
-        from agent.backend.config import get_effective_model, _eval_model_override, eval_model_context
+        from agent.backend.config import get_effective_model, eval_model_context
 
         monkeypatch.setattr(
             "agent.backend.platform_settings.get_agent_config",

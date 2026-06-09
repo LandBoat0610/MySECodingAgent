@@ -9,14 +9,30 @@ from agent.backend.database import get_connection
 AGENT_CONFIG_KEY = "agent_config"
 TOOL_SETTINGS_KEY = "tool_settings"
 SKILLS_KEY = "skills"
-DEFAULT_TOOL_NAMES = (
-    "execute_bash",
-    "read_file",
-    "write_file",
-    "web_search",
-    "fetch_url",
-    "rag_search",
-)
+
+
+def get_registered_tools() -> list[Dict[str, str]]:
+    """Return the real backend tools registered for LLM function calling."""
+    try:
+        from agent.backend.tools import tools
+    except Exception:
+        return []
+
+    registered = []
+    for tool in tools:
+        function = tool.get("function", {}) if isinstance(tool, dict) else {}
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        registered.append({
+            "name": name,
+            "description": str(function.get("description") or "").strip(),
+        })
+    return registered
+
+
+def get_registered_tool_names() -> tuple[str, ...]:
+    return tuple(tool["name"] for tool in get_registered_tools())
 
 
 def _read_setting_value(key: str) -> str | None:
@@ -73,7 +89,7 @@ def set_agent_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _default_tool_settings() -> Dict[str, bool]:
-    return {name: True for name in DEFAULT_TOOL_NAMES}
+    return {name: True for name in get_registered_tool_names()}
 
 
 def get_tool_settings() -> Dict[str, bool]:
@@ -84,7 +100,7 @@ def get_tool_settings() -> Dict[str, bool]:
     try:
         stored = json.loads(value)
         if isinstance(stored, dict):
-            for name in DEFAULT_TOOL_NAMES:
+            for name in base:
                 if name in stored:
                     base[name] = bool(stored[name])
     except (json.JSONDecodeError, TypeError):

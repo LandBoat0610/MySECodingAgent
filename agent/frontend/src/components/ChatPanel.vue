@@ -499,7 +499,11 @@ function sortedTaskList(plans) {
 // 新轮发送后 plans 为空，此处直接返回 []，让用户看到"等待 Agent 规划"
 // 待 Agent 生成新计划并 fetchPlans() 后，这里才会有数据
 const taskList = computed(() => {
-  const active = store.plans.filter(p => !store.prevRoundPlanIds.has(p.id))
+  const scopedPlans = store.currentRoundPlans || store.plans
+  const hasRoundScopedPlans = store.currentRoundId && scopedPlans.length > 0
+  const active = hasRoundScopedPlans
+    ? scopedPlans
+    : store.plans.filter(p => !store.prevRoundPlanIds.has(p.id))
   return sortedTaskList(active)
 })
 
