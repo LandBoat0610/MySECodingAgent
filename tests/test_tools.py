@@ -492,7 +492,8 @@ class TestGetGitDiff:
         # get an error from git or a "clean" response from a parent git repo
         assert data["status"] in ("success", "error")
         if data["status"] == "error":
-            assert "not_repo" in data.get("error_type", "") or "git" in data["output"].lower()
+            error_type = data.get("error_type") or ""
+            assert "not_repo" in error_type or "git" in (data.get("output") or "").lower()
 
 
 # ==================== run_tests ====================
