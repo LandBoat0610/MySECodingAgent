@@ -205,8 +205,8 @@ cd_deploy:
     - |
       SUCCESS=false
       for i in $(seq 1 18); do
-        echo "  Check ${i}: curl /health..."
-        HEALTH_RESP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "000")
+        echo "  Check ${i}: docker exec curl /health..."
+        HEALTH_RESP=$(docker exec agent-backend curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "000")
 
         if [ "$HEALTH_RESP" = "200" ]; then
           echo "Backend /health returned 200, service is ready"
