@@ -178,12 +178,16 @@ coverage_merge:
   coverage: '/TOTAL.*\s+(\d+%)/'
 
 # ============================================================
-# CD 阶段：通过宿主机 Docker socket 构建镜像并推送到 Registry
+# CD 阶段：通过宿主机 Docker socket 构建镜像（需要 Windows runner）
+# 注意：这两个 job 需要跑在有 Docker socket 挂载的 runner 上
+#       Registry 未开启，镜像仅存本地 Docker daemon
 # ============================================================
 build_docker:
   stage: build
   image: docker:24
   timeout: 1h
+  tags:
+    - docker
   script:
     - echo "Building backend image..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
@@ -191,27 +195,9 @@ build_docker:
     - echo "Building frontend image..."
     - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
     - echo "Frontend image built successfully"
-    - echo "Pushing to GitLab Container Registry..."
-    - |
-      if [ -n "$CI_REGISTRY" ] && [ -n "$CI_REGISTRY_USER" ] && [ -n "$CI_REGISTRY_PASSWORD" ]; then
-        echo "  Logging into registry: $CI_REGISTRY"
-        echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
-        echo "  Pushing backend image..."
-        docker tag "$IMAGE_NAME/backend:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/backend:$IMAGE_TAG"
-        docker tag "$IMAGE_NAME/backend:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/backend:latest"
-        docker push "$CI_REGISTRY_IMAGE/backend:$IMAGE_TAG"
-        docker push "$CI_REGISTRY_IMAGE/backend:latest"
-        echo "  Pushing frontend image..."
-        docker tag "$IMAGE_NAME/frontend:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/frontend:$IMAGE_TAG"
-        docker tag "$IMAGE_NAME/frontend:$IMAGE_TAG" "$CI_REGISTRY_IMAGE/frontend:latest"
-        docker push "$CI_REGISTRY_IMAGE/frontend:$IMAGE_TAG"
-        docker push "$CI_REGISTRY_IMAGE/frontend:latest"
-        echo "Images pushed successfully"
-      else
-        echo "WARNING: Registry not configured (missing CI_REGISTRY variables), skipping push"
-        echo "  Images are only available on local Docker daemon"
-      fi
-    - echo "All images built successfully"
+    - echo "All images built successfully (local Docker daemon only)"
+    - echo "Images:"
+    - docker images "$IMAGE_NAME/*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
     - if: $CI_COMMIT_BRANCH == "cicd"
@@ -220,11 +206,13 @@ build_docker:
     - coverage_merge
     - vitest_frontend
 
-# CD 部署阶段：本地部署
+# CD 部署阶段：本地部署（需要 Windows runner + Docker socket）
 deploy_local:
   stage: deploy
   image: docker:24
   timeout: 10m
+  tags:
+    - docker
   script:
     - echo "Starting local deployment..."
     - echo "  Stopping old containers..."
