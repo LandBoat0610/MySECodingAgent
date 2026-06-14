@@ -52,6 +52,8 @@ def normalize_dataset_payload(raw: Dict[str, Any]) -> Tuple[str, List[Dict[str, 
                 "description": desc,
                 "expected_output": expected_output if isinstance(expected_output, str) else None,
                 "test_cases": cleaned_cases,
+                "difficulty": raw_item.get("difficulty"),
+                "expected_plan": raw_item.get("expected_plan"),
             }
         )
 

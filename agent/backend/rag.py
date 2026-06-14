@@ -45,7 +45,7 @@ def _get_client_signature() -> Tuple[Any, ...]:
         return (
             mode,
             os.getenv("CHROMA_HOST", "localhost"),
-            int(os.getenv("CHROMA_PORT", "8000")),
+            int(os.getenv("CHROMA_PORT", "8001")),
             os.getenv("CHROMA_SSL", "false").strip().lower() == "true",
         )
 
@@ -651,7 +651,7 @@ def get_rag_stats() -> Dict[str, Any]:
                 "localhost",
             )
             result["port"] = int(
-                os.getenv("CHROMA_PORT", "8000")
+                os.getenv("CHROMA_PORT", "8001")
             )
 
         elif mode == "persistent":
