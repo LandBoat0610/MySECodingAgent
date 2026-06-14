@@ -39,6 +39,8 @@ from agent.backend.session_manager import (
     generate_and_save_session_summary,
     save_project_memory,
 )
+import time
+from agent.backend.database import get_connection
 
 
 def _is_cross_session_enabled() -> bool:
@@ -49,9 +51,6 @@ def _is_cross_session_enabled() -> bool:
         return bool(get_agent_config().get("cross_session_enabled", True))
     except Exception:
         return True  # 默认启用，避免因读取失败而误关闭
-
-import time
-from agent.backend.database import get_connection
 
 
 TEXT_FILE_EXTENSIONS = (

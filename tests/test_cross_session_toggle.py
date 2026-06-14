@@ -12,36 +12,31 @@
 """
 import sys
 import os
+import uuid
+from datetime import datetime
 
 # 确保项目根目录在 sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-import json
-import uuid
-from datetime import datetime
-
 # ── 0. 准备测试环境 ────────────────────────────────────
-# 在 import 数据库模块之前，必须设置正确的 DB_PATH
-# database.py 在 import 时读取 AGENT_DB_PATH，之后不会再次读取
+# 必须在 import 数据库模块之前设置 AGENT_DB_PATH
 DB = os.path.join(PROJECT_ROOT, "agent_platform.db")
 os.environ["AGENT_DB_PATH"] = DB
-os.environ["OPENAI_API_KEY"] = "sk-test-placeholder"  # 避免 import 时报错
+os.environ["OPENAI_API_KEY"] = "sk-test-placeholder"
 os.environ["OPENAI_BASE_URL"] = "https://api.siliconflow.cn/v1"
 
-from agent.backend.database import init_db, get_connection
-from agent.backend.session_manager import (
+from agent.backend.database import init_db, get_connection  # noqa: E402
+from agent.backend.session_manager import (  # noqa: E402
     get_memory_context,
     save_project_memory,
-    generate_and_save_session_summary,
-    get_project_memory,
-    get_user_preferences,
     list_project_memory,
 )
-from agent.backend.platform_settings import (
+from agent.backend.platform_settings import (  # noqa: E402
     set_agent_config,
     get_agent_config,
 )
+from agent.backend.graph import _is_cross_session_enabled  # noqa: E402
 
 
 def test_label(name: str):
@@ -181,8 +176,6 @@ else:
 # 测试 5：graph.py 中 _is_cross_session_enabled() 逻辑
 # ═══════════════════════════════════════════════════════
 test_label("测试 5：_is_cross_session_enabled() 函数行为")
-
-from agent.backend.graph import _is_cross_session_enabled
 
 # 当前开关为 true
 val1 = _is_cross_session_enabled()
@@ -348,7 +341,9 @@ with get_connection() as conn:
     )
     # 写一条模拟的对话轮次
     conn.execute(
-        "INSERT INTO conversation_rounds (id, session_id, project_id, user_message, status, created_at, finished_at, final_answer) "
+        "INSERT INTO conversation_rounds "
+        "(id, session_id, project_id, user_message, status, "
+        "created_at, finished_at, final_answer) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (uuid.uuid4().hex, test_session_id, test_project_id,
          "测试跨对话知识共享", "completed",
@@ -376,7 +371,7 @@ else:
 # 结果汇总
 # ═══════════════════════════════════════════════════════
 print("\n" + "█" * 60)
-print(f"  测试结果汇总")
+print("  测试结果汇总")
 print(f"  通过: {passed} / 失败: {failed}")
 print("█" * 60)
 
