@@ -186,8 +186,6 @@ build_docker:
   stage: build
   image: docker:24
   timeout: 1h
-  tags:
-    - docker
   script:
     - echo "Building backend image..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
@@ -211,8 +209,6 @@ deploy_local:
   stage: deploy
   image: docker:24
   timeout: 10m
-  tags:
-    - docker
   script:
     - echo "Starting local deployment..."
     - echo "  Stopping old containers..."
