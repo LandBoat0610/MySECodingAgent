@@ -141,7 +141,7 @@ def create_plan(
     trace: List[Dict[str, Any]],
     state: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    log_state(trace, "plan", f"正在为任务制定执行计划: {task}")
+    log_state(trace, "plan", f"正在为任务制定执行计划: {task}", state=state)
     try:
         prompts_config = load_prompts()
         planner_config = prompts_config.get("planner_prompt", {})
@@ -250,7 +250,7 @@ def infer_coding_targets(
     trace: List[Dict[str, Any]],
     state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    log_state(trace, "infer_targets", "Using LLM to infer target file and run command...")
+    log_state(trace, "infer_targets", "Using LLM to infer target file and run command...", state=state)
 
     # 从 YAML 配置文件中加载提示词
     try:

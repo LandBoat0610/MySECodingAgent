@@ -158,7 +158,7 @@ def save_memory(task: str, result: str) -> None:
 
 
 def _serialize_state(state: Dict[str, Any]) -> str:
-    clean = {k: v for k, v in state.items() if k != "_cancel_event"}
+    clean = {k: v for k, v in state.items() if k not in ("_cancel_event", "_log_callback_key")}
     return json.dumps(clean, ensure_ascii=False)
 
 
@@ -267,9 +267,14 @@ def log_state(
 
     # 调用所有注册的回调（用于 WebSocket 实时推送）
     # 每个 session_id 最多一个回调，避免重连积累导致重复推送
+    route_key = session_id
+    if not route_key and state and isinstance(state, dict):
+        route_key = state.get("_log_callback_key") or state.get("session_id")
     with _LOG_CALLBACKS_LOCK:
         callbacks_snapshot = list(_LOG_CALLBACKS.items())
     for sid_key, cb in callbacks_snapshot:
+        if route_key and sid_key not in (route_key, "__global__"):
+            continue
         try:
             cb(item)
         except Exception:

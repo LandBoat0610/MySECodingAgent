@@ -362,15 +362,16 @@ def planner_node(state: AgentState) -> AgentState:
     if session_id:
         import uuid
         from datetime import datetime
+        round_id = state.get("current_round_id") or ""
         try:
             with get_connection() as conn:
                 for step in steps:
                     conn.execute(
                         "INSERT INTO plans "
-                        "(id, session_id, project_id, content, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        "(id, session_id, project_id, round_id, content, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (uuid.uuid4().hex[:8], session_id, state["project_id"],
-                         step, "pending", datetime.now().isoformat())
+                         round_id, step, "pending", datetime.now().isoformat())
                     )
         except Exception as e:
             print(f"Error saving plans to DB: {e}")
@@ -401,6 +402,7 @@ def planner_node(state: AgentState) -> AgentState:
             state["target_file"] = targets["target_file"]
             state["run_command"] = targets["run_command"]
             if session_id:
+                round_id = state.get("current_round_id") or ""
                 try:
                     with get_connection() as conn:
                         conn.execute(
@@ -410,10 +412,10 @@ def planner_node(state: AgentState) -> AgentState:
                         for step in steps:
                             conn.execute(
                                 "INSERT INTO plans "
-                                "(id, session_id, project_id, content, status, created_at) "
-                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                "(id, session_id, project_id, round_id, content, status, created_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                                 (uuid.uuid4().hex[:8], session_id, state["project_id"],
-                                 step, "pending", datetime.now().isoformat())
+                                 round_id, step, "pending", datetime.now().isoformat())
                             )
                 except Exception as e:
                     print(f"Error saving refined plans to DB: {e}")

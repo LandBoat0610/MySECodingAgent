@@ -26,6 +26,23 @@ def _migrate_eval_results_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE eval_task_results ADD COLUMN {col} {ddl}")
 
 
+def _migrate_eval_tasks_columns(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.execute("PRAGMA table_info(eval_tasks)")
+        names = {row[1] for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    for col, ddl in [
+        ("current_item_index", "INTEGER DEFAULT -1"),
+        ("current_item_key", "TEXT DEFAULT ''"),
+        ("current_item_description", "TEXT DEFAULT ''"),
+        ("current_phase", "TEXT DEFAULT ''"),
+        ("current_trace_json", "TEXT DEFAULT '[]'"),
+    ]:
+        if col not in names:
+            conn.execute(f"ALTER TABLE eval_tasks ADD COLUMN {col} {ddl}")
+
+
 def _migrate_sessions_columns(conn: sqlite3.Connection) -> None:
     try:
         cur = conn.execute("PRAGMA table_info(sessions)")
@@ -140,6 +157,11 @@ def init_db():
                 completed_items INTEGER NOT NULL DEFAULT 0,
                 passed_count INTEGER NOT NULL DEFAULT 0,
                 failed_count INTEGER NOT NULL DEFAULT 0,
+                current_item_index INTEGER DEFAULT -1,
+                current_item_key TEXT DEFAULT '',
+                current_item_description TEXT DEFAULT '',
+                current_phase TEXT DEFAULT '',
+                current_trace_json TEXT DEFAULT '[]',
                 FOREIGN KEY(dataset_id) REFERENCES eval_datasets(id)
             );
             CREATE TABLE IF NOT EXISTS eval_task_results (
@@ -168,6 +190,12 @@ def init_db():
         _migrate_sessions_columns(conn)
         _migrate_plans_columns(conn)
         _migrate_eval_results_columns(conn)
+        _migrate_eval_tasks_columns(conn)
+        conn.execute(
+            """UPDATE eval_tasks
+               SET status = 'cancelled', current_phase = 'cancelled'
+               WHERE status IN ('running', 'cancelling')"""
+        )
     ensure_eval_storage_dirs()
     print("Database initialized.")
 

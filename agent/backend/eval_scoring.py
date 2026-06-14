@@ -44,15 +44,25 @@ def evaluate_process_oriented(
         "trace_steps": len(trace or []),
         "errors_count": len(errors or []),
     }
-    if detail["errors_count"] > 0:
-        return False, detail
     if detail["trace_steps"] < 2:
+        detail["process_quality"] = "insufficient_trace"
         return False, detail
 
+    result_ok = True
     if item.get("expected_output"):
-        ok, sub = evaluate_result_oriented(final_answer, item)
+        result_ok, sub = evaluate_result_oriented(final_answer, item)
         detail["result_subcheck"] = sub
-        return ok, detail
+        if not result_ok:
+            detail["process_quality"] = "result_mismatch"
+            return False, detail
+
+    if detail["errors_count"] > 0:
+        detail["recovered_from_errors"] = bool((final_answer or "").strip() and result_ok)
+        detail["process_quality"] = "recovered_with_errors" if detail["recovered_from_errors"] else "unrecovered_errors"
+        return detail["recovered_from_errors"], detail
+
+    detail["recovered_from_errors"] = False
+    detail["process_quality"] = "clean"
 
     return True, detail
 

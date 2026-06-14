@@ -223,6 +223,11 @@ class EvalTaskResponse(BaseModel):
     completed_items: int = 0
     passed_count: int = 0
     failed_count: int = 0
+    current_item_index: int = -1
+    current_item_key: str = ""
+    current_item_description: str = ""
+    current_phase: str = ""
+    current_trace_json: List[Any] = Field(default_factory=list)
 
 
 class EvalTaskResultResponse(BaseModel):

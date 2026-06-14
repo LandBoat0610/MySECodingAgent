@@ -89,17 +89,30 @@ class TestEvaluateResultOriented:
 
 
 class TestEvaluateProcessOriented:
-    def test_errors_present_fails(self):
+    def test_errors_present_can_pass_after_recovery(self):
         errors = [{"status": "error"}]
         trace = [{"phase": "planner"}, {"phase": "executor"}, {"phase": "reviewer"}]
-        passed, detail = evaluate_process_oriented("answer", {}, errors, trace)
+        item = {"expected_output": "answer"}
+        passed, detail = evaluate_process_oriented("answer", item, errors, trace)
+        assert passed is True
+        assert detail["errors_count"] == 1
+        assert detail["recovered_from_errors"] is True
+        assert detail["process_quality"] == "recovered_with_errors"
+
+    def test_errors_present_still_fails_when_result_mismatches(self):
+        errors = [{"status": "error"}]
+        trace = [{"phase": "planner"}, {"phase": "executor"}, {"phase": "reviewer"}]
+        item = {"expected_output": "expected"}
+        passed, detail = evaluate_process_oriented("wrong", item, errors, trace)
         assert passed is False
         assert detail["errors_count"] == 1
+        assert detail["process_quality"] == "result_mismatch"
 
     def test_few_trace_steps_fails(self):
         passed, detail = evaluate_process_oriented("answer", {}, [], [{"phase": "planner"}])
         assert passed is False
         assert detail["trace_steps"] == 1
+        assert detail["process_quality"] == "insufficient_trace"
 
     def test_minimal_trace_no_errors_no_expected_passes(self):
         trace = [{"phase": "planner"}, {"phase": "executor"}]
@@ -107,6 +120,7 @@ class TestEvaluateProcessOriented:
         assert passed is True
         assert detail["trace_steps"] == 2
         assert detail["errors_count"] == 0
+        assert detail["process_quality"] == "clean"
 
     def test_with_expected_output_present_correctly(self):
         trace = [{"phase": "planner"}, {"phase": "executor"}, {"phase": "reviewer"}]
@@ -116,6 +130,7 @@ class TestEvaluateProcessOriented:
         assert detail["errors_count"] == 0
         assert detail["trace_steps"] == 3
         assert "result_subcheck" in detail
+        assert detail["process_quality"] == "clean"
 
     def test_with_expected_output_missing(self):
         trace = [{"phase": "planner"}, {"phase": "executor"}]
@@ -237,3 +252,10 @@ class TestDecidePassedCombined:
         trace = [{"phase": "p"}]
         passed, detail = decide_passed("combined", "nope", item, [{"error": "x"}], trace)
         assert passed is False
+
+    def test_combined_method_passes_with_recovery(self):
+        item = {"expected_output": "yes"}
+        trace = [{"phase": "p"}, {"phase": "e"}, {"phase": "final"}]
+        passed, detail = decide_passed("combined", "yes answer", item, [{"error": "x"}], trace)
+        assert passed is True
+        assert detail["process_check"]["process_quality"] == "recovered_with_errors"

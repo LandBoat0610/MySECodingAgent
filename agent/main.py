@@ -817,8 +817,34 @@ def get_plan(project_id: str, sid: str):
             "SELECT *, rowid FROM plans WHERE session_id = ? ORDER BY rowid ASC",
             (sid,),
         ).fetchall()
+        round_refs = conn.execute(
+            "SELECT id, created_at FROM conversation_rounds WHERE session_id = ? ORDER BY created_at ASC",
+            (sid,),
+        ).fetchall()
 
-    return [dict(p) for p in plans]
+    current_round_id = ""
+    try:
+        snapshot = json.loads(row["state_snapshot"] or "{}")
+        current_round_id = snapshot.get("current_round_id") or ""
+    except Exception:
+        current_round_id = ""
+
+    out = []
+    all_round_items = [dict(r) for r in round_refs]
+    for plan in plans:
+        item = dict(plan)
+        if current_round_id and not item.get("round_id") and item.get("status") == "pending":
+            item["round_id"] = current_round_id
+        if not item.get("round_id"):
+            plan_created_at = item.get("created_at") or ""
+            for idx, round_item in enumerate(all_round_items):
+                current_created = round_item.get("created_at") or ""
+                next_created = all_round_items[idx + 1].get("created_at") if idx + 1 < len(all_round_items) else None
+                if plan_created_at >= current_created and (not next_created or plan_created_at < next_created):
+                    item["round_id"] = round_item["id"]
+                    break
+        out.append(item)
+    return out
 
 
 @app.get("/projects/{project_id}/sessions/{sid}/rounds", response_model=list[ConversationRoundResponse])

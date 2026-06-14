@@ -99,7 +99,7 @@ describe('EvalTasksView.vue', () => {
         it('should render page sections', () => {
             const wrapper = mountView()
             expect(wrapper.find('.eval-page').exists()).toBe(true)
-            expect(wrapper.text()).toContain('Agent 版本配置')
+            expect(wrapper.text()).toContain('Agent 模型配置')
             expect(wrapper.text()).toContain('代码测试集')
             expect(wrapper.text()).toContain('新建评测任务')
             expect(wrapper.text()).toContain('评测任务列表')
@@ -118,7 +118,7 @@ describe('EvalTasksView.vue', () => {
 
         it('should show polling indicator initially (polling is described in card-desc)', () => {
             const wrapper = mountView()
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
         })
     })
 
@@ -135,8 +135,8 @@ describe('EvalTasksView.vue', () => {
                 tasks: [{ id: 't1', name: 'Running', status: 'running', completed_items: 0, total_items: 5, passed_count: 0, failed_count: 0 }]
             })
             mountView()
-            // onMounted -> loadAll -> startPoll, setInterval 首次回调在 3 秒后
-            await flushTimers(3000)
+            // onMounted -> loadAll -> startPoll, setInterval 首次回调在 1 秒后
+            await flushTimers(1000)
             expect(mockEval.loadTasks).toHaveBeenCalled()
         })
 
@@ -156,10 +156,11 @@ describe('EvalTasksView.vue', () => {
             const wrapper = mountView()
             await flushTimers()
             // 轮询指示体现在任务状态 pill 和卡片描述中
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
+            expect(wrapper.text()).toContain('20%')
         })
 
-        it('should poll every 3 seconds when running', async () => {
+        it('should poll every 1 second when running', async () => {
             mockEval = makeEvalStore({
                 tasks: [{ id: 't1', name: 'Running', status: 'running', completed_items: 2, total_items: 5, passed_count: 1, failed_count: 0 }]
             })
@@ -169,11 +170,11 @@ describe('EvalTasksView.vue', () => {
             const baseCalls = mockEval.loadTasks.mock.calls.length
             mockEval.loadTasks.mockClear()
 
-            await flushTimers(3000)
+            await flushTimers(1000)
             expect(mockEval.loadTasks).toHaveBeenCalledTimes(1)
             mockEval.loadTasks.mockClear()
 
-            await flushTimers(6000)
+            await flushTimers(2000)
             expect(mockEval.loadTasks).toHaveBeenCalledTimes(2)
         })
 
@@ -186,7 +187,7 @@ describe('EvalTasksView.vue', () => {
             mockEval.loadTasks.mockClear()
 
             // 第一轮: 有 running
-            await flushTimers(3000)
+            await flushTimers(1000)
             expect(mockEval.loadTasks).toHaveBeenCalledTimes(1)
 
             // 模拟任务完成
@@ -194,7 +195,7 @@ describe('EvalTasksView.vue', () => {
             mockEval.loadTasks.mockClear()
 
             // 第二轮: 无 running，不再调用
-            await flushTimers(3000)
+            await flushTimers(1000)
             expect(mockEval.loadTasks).not.toHaveBeenCalled()
         })
     })
@@ -216,13 +217,13 @@ describe('EvalTasksView.vue', () => {
             })
             const wrapper = mountView()
             await flushTimers()
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
 
             // 任务完成
             mockEval.tasks = [{ id: 't1', name: 'Done', status: 'completed', completed_items: 5, total_items: 5, passed_count: 5, failed_count: 0 }]
-            await flushTimers(3000)
+            await flushTimers(1000)
             // 轮询描述仍然存在
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
         })
     })
 
@@ -232,7 +233,7 @@ describe('EvalTasksView.vue', () => {
             const wrapper = mountView()
             await flushTimers()
             // 轮询描述始终存在
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
         })
 
         it('should switch to active when running tasks appear', async () => {
@@ -240,8 +241,8 @@ describe('EvalTasksView.vue', () => {
                 tasks: [{ id: 't1', name: 'New Run', status: 'running', completed_items: 0, total_items: 5, passed_count: 0, failed_count: 0 }]
             })
             const wrapper = mountView()
-            await flushTimers(3000)
-            expect(wrapper.text()).toContain('每 3 秒自动刷新')
+            await flushTimers(1000)
+            expect(wrapper.text()).toContain('每 1 秒自动刷新')
             // 存在运行中的任务
             expect(wrapper.text()).toContain('running')
         })
