@@ -197,7 +197,8 @@ cd_deploy:
     # ---- 部署 ----
     - echo "Starting local deployment..."
     - echo "  Stopping old containers..."
-    - docker-compose down || true
+    - docker rm -f agent-backend agent-frontend 2>/dev/null || true
+    - docker-compose down --remove-orphans || true
     - echo "  Starting new containers..."
     - docker-compose up -d
     - echo "Waiting for service to be ready (up to 90 seconds)..."
