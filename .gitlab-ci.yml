@@ -3,7 +3,6 @@ stages:
   - security
   - test
   - report
-  - build
   - deploy
 
 cache:
@@ -178,43 +177,29 @@ coverage_merge:
   coverage: '/TOTAL.*\s+(\d+%)/'
 
 # ============================================================
-# CD 阶段：通过宿主机 Docker socket 构建镜像（需要 Windows runner）
-# 注意：这两个 job 需要跑在有 Docker socket 挂载的 runner 上
-#       Registry 未开启，镜像仅存本地 Docker daemon
+# CD 阶段：构建镜像并部署（合并为一个 job，确保在同一台机器上执行）
+# 注意：Registry 未开启，镜像仅存本地 Docker daemon
 # ============================================================
-build_docker:
-  stage: build
+cd_deploy:
+  stage: deploy
   image: docker:24
   timeout: 1h
   script:
+    # ---- 构建 ----
     - echo "Building backend image..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
     - echo "Backend image built successfully"
     - echo "Building frontend image..."
     - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
     - echo "Frontend image built successfully"
-    - echo "All images built successfully (local Docker daemon only)"
     - echo "Images:"
-    - docker images "$IMAGE_NAME/*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
-  rules:
-    - if: $CI_COMMIT_BRANCH == "master"
-    - if: $CI_COMMIT_BRANCH == "cicd"
-
-  needs:
-    - coverage_merge
-    - vitest_frontend
-
-# CD 部署阶段：本地部署（需要 Windows runner + Docker socket）
-deploy_local:
-  stage: deploy
-  image: docker:24
-  timeout: 10m
-  script:
+    - docker images "$IMAGE_NAME/*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" || true
+    # ---- 部署 ----
     - echo "Starting local deployment..."
     - echo "  Stopping old containers..."
     - docker-compose down || true
-    - echo "  Starting new containers (using pre-built images, no rebuild)..."
-    - docker-compose up -d --no-build
+    - echo "  Starting new containers..."
+    - docker-compose up -d
     - echo "Waiting for service to be ready (up to 90 seconds)..."
     - |
       SUCCESS=false
@@ -255,7 +240,8 @@ deploy_local:
     - if: $CI_COMMIT_BRANCH == "cicd"
 
   needs:
-    - build_docker
+    - coverage_merge
+    - vitest_frontend
   environment:
     name: production
     url: http://localhost:3000
