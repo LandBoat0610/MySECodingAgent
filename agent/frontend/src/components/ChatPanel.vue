@@ -52,8 +52,8 @@
             <div class="memory-item-label">📦 项目记忆</div>
             <pre class="memory-item-content pre">{{ store.projectMemory }}</pre>
           </div>
-          <div v-if="store.relevantHistory.length > 0" class="memory-item">
-            <div class="memory-item-label">📜 相关历史 ({{ store.relevantHistory.length }} 条)</div>
+          <div v-if="store.relevantHistory?.length > 0" class="memory-item">
+            <div class="memory-item-label">📜 相关历史 ({{ store.relevantHistory?.length }} 条)</div>
             <div v-for="(h, i) in store.relevantHistory" :key="i" class="history-entry">
               <span class="history-role">{{ h.role === 'user' ? '👤' : '🤖' }}</span>
               <span class="history-content">{{ h.content }}</span>
@@ -467,14 +467,14 @@ const hasMemoryContext = computed(() => {
   return store.memoryLoading ||
     !!store.sessionSummary ||
     !!store.projectMemory ||
-    store.relevantHistory.length > 0
+    store.relevantHistory?.length > 0
 })
 const memorySummaryText = computed(() => {
   if (store.memoryLoading) return '加载中...'
   const parts = []
   if (store.sessionSummary) parts.push('有会话摘要')
   if (store.projectMemory) parts.push('有项目记忆')
-  if (store.relevantHistory.length) parts.push(`${store.relevantHistory.length} 条相关历史`)
+  if (store.relevantHistory?.length) parts.push(`${store.relevantHistory.length} 条相关历史`)
   return parts.length ? parts.join('，') : ''
 })
 const memoryLoading = computed(() => store.memoryLoading)

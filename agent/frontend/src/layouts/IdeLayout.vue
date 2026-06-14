@@ -105,7 +105,7 @@ onMounted(async () => {
       await store.restoreSessionState()
     }
     // 加载跨对话记忆上下文
-    store.fetchMemoryContext()
+    store.fetchMemoryContext?.()
   }
 })
 
