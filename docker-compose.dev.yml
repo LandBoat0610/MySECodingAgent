@@ -1,21 +1,21 @@
 version: "3.9"
 
 # ================================================================
-# Agent Platform - 生产部署 Compose 文件
-# 使用预构建镜像，不执行本地构建
+# Agent Platform - 本地开发 Compose 文件
+# 从源码构建镜像，适合开发调试
 #
 # 用法：
-#   生产部署：docker-compose up -d
-#   指定版本：IMAGE_TAG=abc1234 docker-compose up -d
-#   拉取远程镜像：IMAGE_NAME=registry.gitlab.com/group/project docker-compose up -d
-#
-# 本地开发请使用：docker-compose -f docker-compose.dev.yml up --build
+#   docker-compose -f docker-compose.dev.yml up --build
+#   或指定镜像名：IMAGE_NAME=myapp docker-compose -f docker-compose.dev.yml up --build
 # ================================================================
 
 services:
   # 后端服务 (FastAPI + Uvicorn)
   backend:
     image: ${IMAGE_NAME:-agent-platform}/backend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: agent-backend
     restart: unless-stopped
     ports:
@@ -26,7 +26,8 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - PYTHONUNBUFFERED=1
     volumes:
-      # 持久化 SQLite 数据库和 workspace 文件
+      # 开发时挂载源码实现热重载（需配合 --reload 启动参数）
+      # - ./agent:/app/agent
       - agent_data:/app/data
       - agent_workspaces:/app/workspaces
     networks:
@@ -41,6 +42,9 @@ services:
   # 前端服务 (Vue 3 + Vite -> nginx 静态托管)
   frontend:
     image: ${IMAGE_NAME:-agent-platform}/frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./agent/frontend
+      dockerfile: Dockerfile.frontend
     container_name: agent-frontend
     restart: unless-stopped
     ports:
