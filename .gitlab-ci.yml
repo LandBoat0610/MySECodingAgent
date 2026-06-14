@@ -239,6 +239,7 @@ cd_deploy:
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
     - if: $CI_COMMIT_BRANCH == "cicd"
+    - if: $CI_COMMIT_BRANCH == "dev"
 
   needs:
     - coverage_merge
