@@ -1,0 +1,63 @@
+version: "3.9"
+
+# ================================================================
+# Agent Platform - 本地开发 Compose 文件
+# 从源码构建镜像，适合开发调试
+#
+# 用法：
+#   docker-compose -f docker-compose.dev.yml up --build
+#   或指定镜像名：IMAGE_NAME=myapp docker-compose -f docker-compose.dev.yml up --build
+# ================================================================
+
+services:
+  # 后端服务 (FastAPI + Uvicorn)
+  backend:
+    image: ${IMAGE_NAME:-agent-platform}/backend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # 开发时挂载源码实现热重载（需配合 --reload 启动参数）
+      # - ./agent:/app/agent
+      - agent_data:/app/data
+      - agent_workspaces:/app/workspaces
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # 前端服务 (Vue 3 + Vite -> nginx 静态托管)
+  frontend:
+    image: ${IMAGE_NAME:-agent-platform}/frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./agent/frontend
+      dockerfile: Dockerfile.frontend
+    container_name: agent-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - agent-net
+
+volumes:
+  agent_data:
+    driver: local
+  agent_workspaces:
+    driver: local
+
+networks:
+  agent-net:
+    driver: bridge

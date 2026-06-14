@@ -3,7 +3,6 @@ stages:
   - security
   - test
   - report
-  - build
   - deploy
 
 cache:
@@ -17,7 +16,6 @@ variables:
   OPENAI_BASE_URL: "https://ci-test.example.com/v1"
   IMAGE_NAME: "agent-platform"
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
-  # 自定义 CI 镜像（本地 docker build -f ci.Dockerfile -t ci-python . 即可构建）
   CI_TEST_IMAGE: "ci-python:latest"
 
 # 1. 代码风格检查
@@ -131,7 +129,7 @@ pytest_eval:
     expire_in: 1 day
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# 4. 前端单元测试（保持不变，因为它用的是 node 镜像）
+# 4. 前端单元测试
 vitest_frontend:
   stage: test
   image: node:20
@@ -178,69 +176,74 @@ coverage_merge:
     - pytest_eval
   coverage: '/TOTAL.*\s+(\d+%)/'
 
-# CD 阶段：通过宿主机 Docker socket 构建镜像（无需 dind）
-build_docker:
-  stage: build
+# ============================================================
+# CD 阶段：构建镜像并部署（合并为一个 job，确保在同一台机器上执行）
+# 注意：Registry 未开启，镜像仅存本地 Docker daemon
+# ============================================================
+cd_deploy:
+  stage: deploy
   image: docker:24
-  timeout: 1h  # 增加超时时间到 1 小时
+  timeout: 1h
   script:
-    - echo "开始构建后端镜像..."
+    # ---- 构建 ----
+    - echo "Building backend image..."
     - docker build -t "$IMAGE_NAME/backend:$IMAGE_TAG" -t "$IMAGE_NAME/backend:latest" .
-    - echo "✅ 后端镜像构建成功"
-    - echo "开始构建前端镜像..."
+    - echo "Backend image built successfully"
+    - echo "Building frontend image..."
     - docker build -t "$IMAGE_NAME/frontend:$IMAGE_TAG" -t "$IMAGE_NAME/frontend:latest" -f agent/frontend/Dockerfile.frontend agent/frontend/
-    - echo "✅ 前端镜像构建成功"
-    - echo "🎉 所有镜像构建完成（未推送到远程 Registry）"
+    - echo "Frontend image built successfully"
+    - echo "Images:"
+    - docker images "$IMAGE_NAME/*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" || true
+    # ---- 部署 ----
+    - echo "Starting local deployment..."
+    - echo "  Stopping old containers..."
+    - docker rm -f agent-backend agent-frontend 2>/dev/null || true
+    - docker-compose down --remove-orphans || true
+    - echo "  Starting new containers..."
+    - docker-compose up -d
+    - echo "Waiting for service to be ready (up to 90 seconds)..."
+    - |
+      SUCCESS=false
+      for i in $(seq 1 18); do
+        echo "  Check ${i}: docker exec curl /health..."
+        HEALTH_RESP=$(docker exec agent-backend curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "000")
+
+        if [ "$HEALTH_RESP" = "200" ]; then
+          echo "Backend /health returned 200, service is ready"
+          SUCCESS=true
+          break
+        fi
+
+        backend_running=$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null || echo "false")
+        frontend_running=$(docker inspect -f '{{.State.Running}}' agent-frontend 2>/dev/null || echo "false")
+        echo "  Backend running: $backend_running, Frontend running: $frontend_running, HTTP: $HEALTH_RESP"
+
+        if [ $i -eq 18 ]; then
+          echo "Deploy failed! Service not ready within 90 seconds"
+          echo "  Backend container logs:"
+          docker logs --tail 50 agent-backend 2>/dev/null || echo "  Backend container not found"
+          echo "  Frontend container logs:"
+          docker logs --tail 20 agent-frontend 2>/dev/null || echo "  Frontend container not found"
+          exit 1
+        fi
+
+        sleep 5
+      done
+
+      if [ "$SUCCESS" = "true" ]; then
+        echo "Deploy successful! Services are running"
+        echo "  Backend API: http://localhost:8000"
+        echo "  API Docs:    http://localhost:8000/docs"
+        echo "  Frontend:    http://localhost:3000"
+      fi
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
-   
+    - if: $CI_COMMIT_BRANCH == "cicd"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
   needs:
     - coverage_merge
     - vitest_frontend
-
-# CD 部署阶段：本地直接部署（方案 A）
-deploy_local:
-  stage: deploy
-  image: docker:24
-  timeout: 10m
-  script:
-    - echo "🚀 开始本地部署..."
-    - echo "  停止旧容器..."
-    - docker-compose down || true
-    - echo "  启动新容器..."
-    - docker-compose up -d
-    - echo "⏳ 等待服务启动（最多 60 秒）..."
-    - |
-      for i in $(seq 1 12); do
-        echo "  第 ${i} 次检查..."
-        # 检查后端和前端容器是否都在运行
-        backend_running=$(docker inspect -f '{{.State.Running}}' agent-backend 2>/dev/null || echo "false")
-        frontend_running=$(docker inspect -f '{{.State.Running}}' agent-frontend 2>/dev/null || echo "false")
-        
-        if [ "$backend_running" = "true" ] && [ "$frontend_running" = "true" ]; then
-          echo "✅ 后端容器正在运行"
-          echo "✅ 前端容器正在运行"
-          echo "✅ 部署成功！服务已启动"
-          echo "  后端：http://localhost:8000"
-          echo "  前端：http://localhost:3000"
-          exit 0
-        fi
-        
-        if [ $i -eq 12 ]; then
-          echo "❌ 容器启动失败，查看日志："
-          docker logs agent-backend 2>/dev/null || echo "后端容器未启动"
-          docker logs agent-frontend 2>/dev/null || echo "前端容器未启动"
-          exit 1
-        fi
-        
-        sleep 5
-      done
-  rules:
-    - if: $CI_COMMIT_BRANCH == "master"
-
-  needs:
-    - build_docker
   environment:
     name: production
     url: http://localhost:3000
-

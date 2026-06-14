@@ -35,12 +35,18 @@ def test_project_create_missing_name():
 # ---------- SessionCreateRequest ----------
 def test_session_create_default_title():
     s = schemas.SessionCreateRequest()
-    assert s.title == "New Session"
+    assert s.title is None
+    assert s.initial_message is None
 
 
 def test_session_create_custom_title():
     s = schemas.SessionCreateRequest(title="My custom session")
     assert s.title == "My custom session"
+
+
+def test_session_create_initial_message():
+    s = schemas.SessionCreateRequest(initial_message="Build a settings page")
+    assert s.initial_message == "Build a settings page"
 
 
 # ---------- Response models (serialisation) ----------

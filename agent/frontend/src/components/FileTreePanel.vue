@@ -1,16 +1,23 @@
 <template>
   <div class="filetree-panel">
     <div class="panel-header">
-      <span class="panel-title">Files</span>
+      <button class="panel-title-button" @click="collapsed = !collapsed" :title="collapsed ? 'Expand Files' : 'Collapse Files'">
+        <span class="panel-chevron">{{ collapsed ? '▸' : '▾' }}</span>
+        <span class="panel-title">Files</span>
+      </button>
       <button class="btn-icon" @click="store.fetchFileTree()" title="Refresh">↻</button>
     </div>
-    <div class="filetree-body">
-      <div v-if="!store.selectedProjectId" class="empty-hint">
-        Select a project to view files.
-      </div>
-      <div v-else-if="store.fileTree.length === 0" class="empty-hint">
-        No files in workspace.
-      </div>
+    <div v-if="!collapsed" class="filetree-body">
+      <EmptyState
+        v-if="!store.selectedProjectId"
+        icon="📁"
+        title="Select a project to view files"
+      />
+      <EmptyState
+        v-else-if="store.fileTree.length === 0"
+        icon="📂"
+        title="No files in workspace"
+      />
       <FileTreeNode
         v-for="node in store.fileTree"
         :key="node.path"
@@ -23,11 +30,14 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
 import FileTreeNode from './FileTreeNode.vue'
+import { EmptyState } from './status/index.js'
 
 const store = useAgentStore()
 const emit = defineEmits(['select-file'])
+const collapsed = ref(false)
 
 function handleSelectFile(node) {
   emit('select-file', node)
@@ -36,10 +46,11 @@ function handleSelectFile(node) {
 
 <style scoped>
 .filetree-panel {
-  flex: 1;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .panel-header {
@@ -52,11 +63,30 @@ function handleSelectFile(node) {
 }
 
 .panel-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-secondary);
+}
+
+.panel-title-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.panel-title-button:hover {
+  color: var(--text-primary);
+}
+
+.panel-chevron {
+  width: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .btn-icon {
@@ -78,7 +108,7 @@ function handleSelectFile(node) {
 
 .filetree-body {
   overflow-y: auto;
-  flex: 1;
+  max-height: 260px;
   padding: 4px 0;
 }
 
@@ -86,6 +116,6 @@ function handleSelectFile(node) {
   padding: 14px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 </style>

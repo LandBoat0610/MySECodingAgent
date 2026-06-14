@@ -22,6 +22,18 @@ export function createSession(projectId, data) {
   return api.post(`/projects/${projectId}/sessions`, data).then(r => r.data)
 }
 
+export function updateSession(projectId, sessionId, data) {
+  return api.patch(`/projects/${projectId}/sessions/${sessionId}`, data).then(r => r.data)
+}
+
+export function deleteSession(projectId, sessionId) {
+  return api.delete(`/projects/${projectId}/sessions/${sessionId}`).then(r => r.data)
+}
+
+export function clearSession(projectId, sessionId) {
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/clear`).then(r => r.data)
+}
+
 export function getSessionState(projectId, sessionId) {
   return api.get(`/projects/${projectId}/sessions/${sessionId}/state`).then(r => r.data)
 }
@@ -34,8 +46,33 @@ export function getPlans(projectId, sessionId) {
   return api.get(`/projects/${projectId}/sessions/${sessionId}/plan`).then(r => r.data)
 }
 
-export function planAction(projectId, sessionId, planId, action) {
-  return api.post(`/projects/${projectId}/sessions/${sessionId}/plan/${planId}/action`, { action }).then(r => r.data)
+export function getRounds(projectId, sessionId, options = {}) {
+  const params = {}
+  if (options.limit) params.limit = options.limit
+  if (options.before) params.before = options.before
+  return api.get(`/projects/${projectId}/sessions/${sessionId}/rounds`, { params }).then(r => r.data)
+}
+
+export function planAction(projectId, sessionId, planId, action, feedback = '') {
+  const body = { action }
+  if (feedback) body.feedback = feedback
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/plan/${planId}/action`, body).then(r => r.data)
+}
+
+export function commandApproval(projectId, sessionId, approvalId, action, feedback = '') {
+  const body = {
+    approval_id: approvalId,
+    action
+  }
+  if (feedback) body.feedback = feedback
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/command-approval`, body).then(r => r.data)
+}
+
+export function continueApproval(projectId, sessionId, approvalId, action) {
+  return api.post(`/projects/${projectId}/sessions/${sessionId}/continue-approval`, {
+    approval_id: approvalId,
+    action
+  }).then(r => r.data)
 }
 
 export function deleteProject(projectId) {
@@ -66,6 +103,30 @@ export function getAgentConfig() {
 
 export function updateAgentConfig(body) {
   return api.put('/settings/agent-config', body).then(r => r.data)
+}
+
+export function getToolSettings() {
+  return api.get('/settings/tools').then(r => r.data)
+}
+
+export function updateToolSettings(body) {
+  return api.put('/settings/tools', body).then(r => r.data)
+}
+
+export function getSkills() {
+  return api.get('/settings/skills').then(r => r.data)
+}
+
+export function createSkill(body) {
+  return api.post('/settings/skills', body).then(r => r.data)
+}
+
+export function updateSkill(skillId, body) {
+  return api.patch(`/settings/skills/${skillId}`, body).then(r => r.data)
+}
+
+export function deleteSkill(skillId) {
+  return api.delete(`/settings/skills/${skillId}`).then(r => r.data)
 }
 
 export function uploadEvalDataset(file, name) {
@@ -132,4 +193,36 @@ export function getEvalCompareAnalytics(leftTaskId, rightTaskId) {
   return api.get('/eval/analytics/compare', {
     params: { left: leftTaskId, right: rightTaskId }
   }).then(r => r.data)
+}
+
+// ── 跨对话记忆 ────────────────────────────────────────────────────
+
+export function getMemoryContext(projectId, sessionId = '') {
+  const params = {}
+  if (sessionId) params.session_id = sessionId
+  return api.get(`/projects/${projectId}/memory/context`, { params }).then(r => r.data)
+}
+
+export function getProjectMemory(projectId) {
+  return api.get(`/projects/${projectId}/memory`).then(r => r.data)
+}
+
+export function saveProjectMemory(projectId, key, value, category = 'general') {
+  return api.post(`/projects/${projectId}/memory`, null, {
+    params: { key, value, category }
+  }).then(r => r.data)
+}
+
+export function getProjectHistory(projectId, query = '', limit = 5) {
+  return api.get(`/projects/${projectId}/history`, {
+    params: { query, limit }
+  }).then(r => r.data)
+}
+
+export function getUserPreferences() {
+  return api.get('/preferences').then(r => r.data)
+}
+
+export function saveUserPreference(key, value) {
+  return api.post('/preferences', null, { params: { key, value } }).then(r => r.data)
 }

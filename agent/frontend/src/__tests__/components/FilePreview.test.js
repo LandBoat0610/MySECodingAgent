@@ -52,6 +52,7 @@ describe('FilePreview.vue', () => {
             fileLoading: true
         }))
         const wrapper = mount(FilePreview)
+        expect(wrapper.find('.preview-placeholder').exists()).toBe(true)
         expect(wrapper.find('.placeholder-text').text()).toBe('Loading...')
     })
 
@@ -61,6 +62,7 @@ describe('FilePreview.vue', () => {
             error: 'File not found'
         }))
         const wrapper = mount(FilePreview)
+        expect(wrapper.find('.preview-placeholder').exists()).toBe(true)
         expect(wrapper.find('.placeholder-text').text()).toBe('File not found')
     })
 

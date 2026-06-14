@@ -7,7 +7,10 @@ WORKDIR /app
 # 先复制依赖文件，利用 Docker 层缓存加速构建
 COPY requirements.txt .
 
-# 安装依赖（使用清华镜像源加速）
+# 安装系统依赖（curl 用于健康检查）
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖（使用清华镜像源加速）
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # 复制项目代码

@@ -104,7 +104,7 @@ class TestUtils:
             os.makedirs(os.path.dirname(file_in_ws), exist_ok=True)
             Path(file_in_ws).touch()
             resolved = resolve_workspace_path(tmpdir, "sub/file.txt")
-            assert resolved == file_in_ws
+            assert resolved == str(Path(file_in_ws).resolve())
 
     def test_resolve_absolute_path_inside_workspace(self):
         """绝对路径在工作区内部应正常返回"""
@@ -112,7 +112,7 @@ class TestUtils:
             file_abs = os.path.join(tmpdir, "test.py")
             Path(file_abs).touch()
             resolved = resolve_workspace_path(tmpdir, file_abs)
-            assert resolved == file_abs
+            assert resolved == str(Path(file_abs).resolve())
 
     def test_resolve_escape_path_raises(self):
         """尝试越权访问工作区外的文件应抛出 PermissionError"""
@@ -321,3 +321,150 @@ class TestSaveTrace:
         assert "flowchart TD" in mmd
         assert "planner" in mmd
         assert "executor" in mmd
+
+
+# ==================== ensure_workspace / prepare_workspace ====================
+class TestEnsureWorkspace:
+    def test_uses_env_var(self, tmp_path, monkeypatch):
+        """设置环境变量时使用指定路径。"""
+        from agent.backend.utils import ensure_workspace
+        ws = str(tmp_path / "env_ws")
+        monkeypatch.setenv("ZIZHI_AGENT_WORKSPACE", ws)
+        result = ensure_workspace()
+        assert os.path.isdir(result)
+        assert result == os.path.abspath(ws)
+
+    def test_creates_temp_dir_without_env(self, monkeypatch):
+        """无环境变量时创建临时目录。"""
+        from agent.backend.utils import ensure_workspace
+        monkeypatch.delenv("ZIZHI_AGENT_WORKSPACE", raising=False)
+        result = ensure_workspace()
+        assert os.path.isdir(result)
+        assert "zizhiagent_workspace_" in result
+
+
+# ==================== load_prompts ====================
+class TestLoadPrompts:
+    def test_loads_from_default_path(self, monkeypatch):
+        """从默认路径加载 prompts.yaml。"""
+        from agent.backend.utils import load_prompts
+        # 清除缓存
+        monkeypatch.setattr("agent.backend.utils._PROMPTS_CACHE", None)
+        result = load_prompts()
+        assert isinstance(result, dict)
+        assert "system_prompt" in result
+
+    def test_uses_cache_on_second_call(self, monkeypatch):
+        """第二次调用使用缓存。"""
+        from agent.backend.utils import load_prompts
+        monkeypatch.setattr("agent.backend.utils._PROMPTS_CACHE", None)
+        result1 = load_prompts()
+        result2 = load_prompts()
+        assert result1 is result2  # same cached object
+
+    def test_file_not_found_raises(self, monkeypatch):
+        """文件不存在时抛出 FileNotFoundError。"""
+        from agent.backend.utils import load_prompts
+        monkeypatch.setattr("agent.backend.utils._PROMPTS_CACHE", None)
+        with pytest.raises(FileNotFoundError):
+            load_prompts("nonexistent_config.yaml")
+
+
+# ==================== log_state ====================
+class TestLogState:
+    def test_appends_to_trace(self):
+        from agent.backend.utils import log_state
+        trace = []
+        log_state(trace, "test_phase", "test content")
+        assert len(trace) == 1
+        assert trace[0]["phase"] == "test_phase"
+        assert "time" in trace[0]
+        assert "meta" in trace[0]
+
+    def test_includes_state_outline(self):
+        from agent.backend.utils import log_state
+        trace = []
+        state = {"status": "running", "task": "hello"}
+        log_state(trace, "phase", "content", state=state)
+        assert "state_outline" in trace[0]
+        assert trace[0]["state_outline"]["status"] == "running"
+
+    def test_session_status_in_trace(self):
+        from agent.backend.utils import log_state
+        trace = []
+        state = {"status": "running"}
+        log_state(trace, "phase", "content", state=state)
+        assert trace[0]["session_status"] == "running"
+
+
+# ==================== sync_workspace_file_back ====================
+class TestSyncWorkspaceBack:
+    def test_skips_when_idle_status(self):
+        from agent.backend.utils import sync_workspace_file_back
+        state = {
+            "status": "idle",
+            "trace": [],
+            "session_id": "s1",
+            "modified_files": ["test.py"],
+            "workspace_dir": "/tmp",
+            "project_root": "/tmp",
+        }
+        sync_workspace_file_back(state)
+        # Should skip and log
+
+    def test_skips_when_no_modified_files(self):
+        from agent.backend.utils import sync_workspace_file_back
+        state = {
+            "status": "completed",
+            "trace": [],
+            "session_id": "s1",
+            "modified_files": [],
+            "workspace_dir": "/tmp",
+            "project_root": "/tmp",
+        }
+        sync_workspace_file_back(state)
+
+    def test_skips_when_no_project_root(self):
+        from agent.backend.utils import sync_workspace_file_back
+        state = {
+            "status": "completed",
+            "trace": [],
+            "session_id": "s1",
+            "modified_files": ["test.py"],
+            "workspace_dir": "/tmp",
+            "project_root": "",
+        }
+        sync_workspace_file_back(state)
+
+
+# ==================== _safe_copy_file ====================
+class TestSafeCopyFile:
+    def test_copies_successfully(self, tmp_path):
+        from agent.backend.utils import _safe_copy_file
+        src = tmp_path / "src.txt"
+        dst = tmp_path / "dst.txt"
+        src.write_text("hello", encoding="utf-8")
+        _safe_copy_file(str(src), str(dst))
+        assert dst.exists()
+        assert dst.read_text(encoding="utf-8") == "hello"
+
+    def test_retries_on_permission_error(self, tmp_path, monkeypatch):
+        from agent.backend.utils import _safe_copy_file
+        import shutil
+        src = tmp_path / "src2.txt"
+        dst = tmp_path / "dst2.txt"
+        src.write_text("retry-test", encoding="utf-8")
+
+        call_count = [0]
+        original_copy2 = shutil.copy2
+
+        def mock_copy2(s, d):
+            call_count[0] += 1
+            if call_count[0] < 3:
+                raise PermissionError("locked")
+            return original_copy2(s, d)
+
+        monkeypatch.setattr("shutil.copy2", mock_copy2)
+        _safe_copy_file(str(src), str(dst))
+        assert dst.exists()
+        assert call_count[0] == 3

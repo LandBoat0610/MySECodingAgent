@@ -107,7 +107,6 @@ describe('IdeLayout.vue', () => {
     expect(wrapper.find('.left-sidebar').exists()).toBe(true)
     expect(wrapper.find('.center-preview').exists()).toBe(true)
     expect(wrapper.find('.right-panel').exists()).toBe(true)
-    expect(wrapper.find('.sidebar-footer').exists()).toBe(true)
     expect(wrapper.find('.mock-live-hud').exists()).toBe(true)
   })
 
@@ -144,9 +143,9 @@ describe('IdeLayout.vue', () => {
     expect(mockStore.fetchFileTree).toHaveBeenCalled()
   })
 
-  it('should embed live eval panel in sidebar footer', () => {
+  it('should embed live eval panel in the left sidebar', () => {
     useAgentStore.mockReturnValue(createMockAgentStore())
     const wrapper = mount(IdeLayout)
-    expect(wrapper.find('.sidebar-footer .mock-live-hud').exists()).toBe(true)
+    expect(wrapper.find('.left-sidebar .mock-live-hud').exists()).toBe(true)
   })
 })

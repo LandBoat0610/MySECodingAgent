@@ -17,7 +17,9 @@ export default defineConfig({
         reporters: process.env.CI
             ? ['verbose', 'junit']
             : ['verbose'],
-        outputFile: 'junit.xml',
+        outputFile: process.env.CI
+            ? { junit: './junit.xml' }
+            : undefined,
         // 覆盖率配置
         coverage: {
             provider: 'v8',
@@ -33,14 +35,7 @@ export default defineConfig({
         // CSS 处理（测试时不处理 CSS）
         css: false,
         // 测试超时
-        testTimeout: 10000,
-        // CI 报告输出
-        reporters: process.env.CI
-            ? ['default', 'junit']
-            : ['default'],
-        outputFile: process.env.CI
-            ? { junit: './junit.xml' }
-            : undefined
+        testTimeout: 10000
     },
     resolve: {
         alias: {

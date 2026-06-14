@@ -42,3 +42,29 @@ Thumbs.db
 # 文档
 docs/
 README.md
+*.md
+
+# Claude Code / IDE
+.claude/
+
+# 前端源码和依赖（前端有独立 Dockerfile）
+agent/frontend/node_modules/
+agent/frontend/src/
+agent/frontend/public/
+agent/frontend/index.html
+agent/frontend/vite.config.*
+agent/frontend/package.json
+agent/frontend/package-lock.json
+
+# Docker Compose 文件
+docker-compose*.yml
+
+# 环境变量模板
+.env.example
+
+# RAG 存储目录（运行时挂载 volume）
+rag_store/
+
+# 日志文件
+*.log
+logs/

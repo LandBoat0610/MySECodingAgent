@@ -3,6 +3,7 @@ from agent.backend import database
 import os
 import sys
 import sqlite3
+import json
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -29,9 +30,13 @@ def test_init_db_creates_tables(temp_db_path):
     tables = [row[0] for row in cursor.fetchall()]
     conn.close()
     expected = [
+        "conversation_rounds",
         "eval_datasets", "eval_task_results", "eval_tasks",
         "plan_actions", "plans", "platform_settings",
+        "project_memory",
         "projects", "sessions",
+        "sqlite_sequence",
+        "user_preferences",
     ]
     assert tables == expected
 
@@ -136,6 +141,41 @@ def test_get_connection_commit(temp_db_path):
     row = conn.execute("SELECT id FROM projects WHERE id='p1'").fetchone()
     conn.close()
     assert row is not None
+
+
+def test_update_session_state_syncs_status_from_state(temp_db_path):
+    """同步 state_snapshot 时也应同步 sessions.status，保证前端能展示等待确认状态"""
+    from agent.backend.utils import update_session_state
+
+    with database.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO projects (id, name, workspace_path, created_at) VALUES (?,?,?,?)",
+            ("p-status", "status-test", "/tmp", "2026-01-01"),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, title, created_at, state_snapshot, status) VALUES (?,?,?,?,?,?)",
+            ("s-status", "p-status", "session", "2026-01-01", "{}", "running"),
+        )
+
+    update_session_state(
+        "s-status",
+        {
+            "status": "awaiting_tool_approval",
+            "pending_tool_approval": {
+                "id": "a1",
+                "command": "pytest -q",
+                "purpose": "运行测试",
+                "status": "pending",
+            },
+        },
+    )
+
+    with database.get_connection() as conn:
+        row = conn.execute("SELECT status, state_snapshot FROM sessions WHERE id = ?", ("s-status",)).fetchone()
+
+    assert row["status"] == "awaiting_tool_approval"
+    snapshot = json.loads(row["state_snapshot"])
+    assert snapshot["pending_tool_approval"]["command"] == "pytest -q"
 
 
 def test_get_connection_rollback(temp_db_path):

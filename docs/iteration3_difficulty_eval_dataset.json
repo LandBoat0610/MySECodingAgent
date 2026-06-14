@@ -1,0 +1,23 @@
+{
+  "name": "迭代三 Agent 难度规划评估数据集",
+  "description": "用于存档本轮难度识别代表性样例，验证 Planner 能输出任务难度并生成匹配步数的计划。",
+  "items": [
+    {
+      "id": "medium-rag-memory-eval",
+      "difficulty": "medium",
+      "description": "让 Agent 在回答课程任务要求时优先检索知识库，并在多轮对话中记住用户偏好：Python 示例必须包含 main 入口。需要补充评测样例并说明验证方式。",
+      "expected_output": "Planner 将该任务识别为 medium，并给出 2-4 步计划。",
+      "expected_plan": {
+        "difficulty": "medium",
+        "step_range": [2, 4],
+        "must_include": ["检索知识库", "记住用户偏好", "补充评测样例"],
+        "should_not_include": ["只回答概念", "不保存数据集"]
+      },
+      "observed_result": {
+        "time": "2026-06-14 23:30:32",
+        "trace": "[PLAN_DIFFICULTY] medium",
+        "actual_difficulty": "medium"
+      }
+    }
+  ]
+}

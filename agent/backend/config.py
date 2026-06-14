@@ -11,6 +11,11 @@ TRACE_JSON = "agent_trace.json"
 TRACE_MERMAID = "agent_trace.mmd"
 MAX_TOOL_OUTPUT = 4000
 MAX_STEP_ITERATIONS = 5
+STEP_ITERATIONS_BY_DIFFICULTY = {
+    "easy": 4,
+    "medium": 7,
+    "hard": 10,
+}
 MAX_REFLECTIONS = 2
 DEFAULT_WORKSPACE_PREFIX = "zizhiagent_workspace_"
 
@@ -47,11 +52,28 @@ def eval_model_context(model_id: str | None):
 
 # 安全拦截正则列表
 BLOCKED_BASH_PATTERNS = [
-    r"\brm\s+-rf\s+/\b",
+    r"\brm\s+-rf\s+/",
     r"\bshutdown\b",
     r"\breboot\b",
     r":\(\)\{:\|:&\};:",
     r"\bdd\s+if=",
     r"\bmkfs\b",
-    r"\bchmod\s+-R\s+777\s+/\b",
+    r"\bchmod\s+-R\s+777\s+/",
 ]
+
+BASH_APPROVAL_REQUIRED = not os.environ.get("SKIP_BASH_APPROVAL", "").lower() in ("1", "true", "yes")
+
+# ── RAG 配置 ──
+RAG_STORE_DIR = os.environ.get("RAG_STORE_DIR", "rag_store")
+RAG_EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+RAG_DEFAULT_TOP_K = int(os.environ.get("RAG_DEFAULT_TOP_K", "5"))
+RAG_CHUNK_SIZE = int(os.environ.get("RAG_CHUNK_SIZE", "500"))
+RAG_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "50"))
+RAG_COLLECTION_NAME = "agent_knowledge"
+
+# ── 跨对话记忆与上下文工程配置 ──
+CROSS_SESSION_ENABLED = os.environ.get("CROSS_SESSION_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+CONTEXT_BUDGET = int(os.environ.get("CONTEXT_BUDGET", "12000"))
+MEMORY_MAX_ENTRIES = int(os.environ.get("MEMORY_MAX_ENTRIES", "20"))
+HISTORY_RETRIEVAL_LIMIT = int(os.environ.get("HISTORY_RETRIEVAL_LIMIT", "5"))
+SESSION_SUMMARY_MAX_LENGTH = int(os.environ.get("SESSION_SUMMARY_MAX_LENGTH", "500"))

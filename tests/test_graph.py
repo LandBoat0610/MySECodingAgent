@@ -78,6 +78,16 @@ class TestPlannerNode:
 
 # ================== Executor Node ==================
 class TestExecutorNode:
+    def test_rag_trigger_detects_chinese_knowledge_base_task(self):
+        from agent.backend.graph import _task_should_use_rag
+
+        assert _task_should_use_rag("根据项目知识库回答：唯一发布口令是什么？") is True
+
+    def test_rag_trigger_skips_simple_math(self):
+        from agent.backend.graph import _task_should_use_rag
+
+        assert _task_should_use_rag("请直接计算 12 × 13，只返回结果。") is False
+
     def test_executor_no_tool_calls(self, monkeypatch, base_state):
         """当 LLM 返回纯文本（不调用工具）时，直接结束步骤"""
         mock_response = MagicMock()
@@ -179,6 +189,95 @@ class TestExecutorNode:
         new_state = executor_node(state)
         assert len(new_state["errors"]) == 1
         assert new_state["errors"][0]["status"] == "error"
+
+    def test_executor_hard_task_uses_dynamic_iteration_limit(self, monkeypatch, base_state):
+        """hard 任务应允许超过默认 5 轮工具循环"""
+        tool_call = MagicMock()
+        tool_call.id = "call_hard"
+        tool_func = MagicMock()
+        tool_func.name = "read_file"
+        tool_func.arguments = '{"path": "a.py"}'
+        tool_call.function = tool_func
+
+        mock_message_tool = MagicMock()
+        mock_message_tool.tool_calls = [tool_call]
+        mock_message_tool.content = None
+
+        mock_message_text = MagicMock()
+        mock_message_text.tool_calls = None
+        mock_message_text.content = "Finished after many reads."
+
+        tool_response = MagicMock()
+        tool_response.choices = [MagicMock(message=mock_message_tool)]
+        text_response = MagicMock()
+        text_response.choices = [MagicMock(message=mock_message_text)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [tool_response] * 6 + [text_response]
+        monkeypatch.setattr("agent.backend.graph.client", mock_client)
+        monkeypatch.setattr("agent.backend.graph.build_system_prompt", lambda mem, ws: "sys")
+        monkeypatch.setattr(
+            "agent.backend.graph.available_functions",
+            {"read_file": lambda path: json.dumps({"status": "success", "output": "content", "path": path})},
+        )
+        monkeypatch.setattr("agent.backend.graph.parse_tool_arguments", lambda raw: json.loads(raw))
+
+        state = base_state.copy()
+        state["task_difficulty"] = "hard"
+        new_state = executor_node(state)
+
+        assert new_state["last_tool_result"]["status"] == "success"
+        assert mock_client.chat.completions.create.call_count == 7
+
+    def test_executor_forces_rag_for_knowledge_base_task(self, monkeypatch, base_state):
+        tool_call = MagicMock()
+        tool_call.id = "call_rag"
+        tool_func = MagicMock()
+        tool_func.name = "rag_search"
+        tool_func.arguments = '{"query": "NEBULA_RAG_7319", "top_k": 5}'
+        tool_call.function = tool_func
+
+        mock_message_tool = MagicMock()
+        mock_message_tool.tool_calls = [tool_call]
+        mock_message_tool.content = None
+
+        mock_message_text = MagicMock()
+        mock_message_text.tool_calls = None
+        mock_message_text.content = "Found NEBULA_RAG_7319."
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            MagicMock(choices=[MagicMock(message=mock_message_tool)]),
+            MagicMock(choices=[MagicMock(message=mock_message_text)]),
+        ]
+        monkeypatch.setattr("agent.backend.graph.client", mock_client)
+        monkeypatch.setattr("agent.backend.graph.build_system_prompt", lambda mem, ws: "sys")
+        monkeypatch.setattr("agent.backend.graph.parse_tool_arguments", lambda raw: json.loads(raw))
+        monkeypatch.setattr(
+            "agent.backend.graph.available_functions",
+            {
+                "rag_search": lambda query, top_k=5: json.dumps({
+                    "status": "success",
+                    "output": json.dumps({
+                        "query": query,
+                        "top_k": top_k,
+                        "results": [
+                            {"content": "code NEBULA_RAG_7319", "source": "README.md", "score": 0.9}
+                        ],
+                    }),
+                })
+            },
+        )
+
+        state = base_state.copy()
+        state["task"] = "请根据项目知识库回答当前项目的内部代码是什么"
+        state["current_task"] = "查询知识库并回答"
+        new_state = executor_node(state)
+
+        first_call_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        assert first_call_kwargs["tool_choice"]["function"]["name"] == "rag_search"
+        assert "rag_search" in new_state["used_tools"]
+        assert new_state["retrieved_context"][0]["source"] == "README.md"
 
 
 # ================== Check Result Node ==================

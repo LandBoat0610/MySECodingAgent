@@ -20,7 +20,6 @@ from agent.backend.eval_scoring import build_eval_prompt, decide_passed
 from agent.backend.eval_storage import DATASETS_DIR, WORKSPACES_DIR, ensure_eval_storage_dirs
 from agent.backend.platform_settings import get_agent_config
 from agent.backend.utils import sync_workspace_file_back
-from agent.backend.config import eval_model_context
 
 _eval_threads: Dict[str, threading.Thread] = {}
 _eval_cancel: Dict[str, threading.Event] = {}
@@ -29,6 +28,52 @@ _registry_lock = threading.Lock()
 
 def _now() -> str:
     return datetime.now().isoformat()
+
+
+def _quality_metrics_enabled() -> bool:
+    return os.environ.get("EVAL_ENABLE_QUALITY", "").lower() in ("1", "true", "yes")
+
+
+def _update_task_progress(
+    task_id: str,
+    *,
+    phase: str,
+    item_index: int = -1,
+    item: Optional[Dict[str, Any]] = None,
+    completed: Optional[int] = None,
+    passed: Optional[int] = None,
+    failed: Optional[int] = None,
+    trace: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    updates = [
+        "current_phase = ?",
+        "current_item_index = ?",
+        "current_item_key = ?",
+        "current_item_description = ?",
+        "updated_at = ?",
+    ]
+    params: List[Any] = [
+        phase,
+        item_index,
+        str((item or {}).get("id") or ""),
+        str((item or {}).get("description") or "")[:500],
+        _now(),
+    ]
+    if completed is not None:
+        updates.append("completed_items = ?")
+        params.append(completed)
+    if passed is not None:
+        updates.append("passed_count = ?")
+        params.append(passed)
+    if failed is not None:
+        updates.append("failed_count = ?")
+        params.append(failed)
+    if trace is not None:
+        updates.append("current_trace_json = ?")
+        params.append(json.dumps(trace[-200:], ensure_ascii=False))
+    params.append(task_id)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE eval_tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
 
 
 def create_dataset_from_bytes(filename: str | None, raw: bytes, display_name: Optional[str] = None) -> Dict[str, Any]:
@@ -411,7 +456,7 @@ def cancel_eval_task(task_id: str) -> Dict[str, Any]:
     return get_eval_task(task_id)
 
 
-def start_eval_task(task_id: str) -> Dict[str, Any]:
+def start_eval_task(task_id: str, concurrency: int = 1) -> Dict[str, Any]:
     task = get_eval_task(task_id)
     if task["status"] not in ("pending", "completed", "failed", "cancelled"):
         raise ValueError("任务状态不允许启动")
@@ -436,18 +481,25 @@ def start_eval_task(task_id: str) -> Dict[str, Any]:
         conn.execute("DELETE FROM eval_task_results WHERE task_id = ?", (task_id,))
         conn.execute(
             """UPDATE eval_tasks SET status = 'running', updated_at = ?, error_message = '',
-               completed_items = 0, passed_count = 0, failed_count = 0 WHERE id = ?""",
+               completed_items = 0, passed_count = 0, failed_count = 0,
+               current_item_index = -1, current_item_key = '', current_item_description = '',
+               current_phase = 'queued', current_trace_json = '[]' WHERE id = ?""",
             (now, task_id),
         )
 
-    th = threading.Thread(target=_eval_worker, args=(task_id, items, cancel_ev), daemon=True)
+    th = threading.Thread(target=_eval_worker, args=(task_id, items, cancel_ev, concurrency), daemon=True)
     with _registry_lock:
         _eval_threads[task_id] = th
     th.start()
     return get_eval_task(task_id)
 
 
-def _build_initial_state(workspace_dir: str, prompt: str, cancel_event: threading.Event) -> Dict[str, Any]:
+def _build_initial_state(
+    workspace_dir: str,
+    prompt: str,
+    cancel_event: threading.Event,
+    log_callback_key: str = "",
+) -> Dict[str, Any]:
     return {
         "project_id": "eval",
         "workspace_dir": workspace_dir,
@@ -469,11 +521,26 @@ def _build_initial_state(workspace_dir: str, prompt: str, cancel_event: threadin
         "last_tool_result": {},
         "last_execution": {},
         "final_answer": "",
+        "task_type": "",
+        "task_difficulty": "",
+        "current_plan": [],
+        "acceptance_criteria": [],
+        "relevant_files": [],
+        "retrieved_context": [],
+        "codebase_summary": "",
+        "test_commands": [],
+        "tool_history": [],
+        "verification_results": [],
+        "patch_history": [],
+        "failure_reason": "",
+        "retry_count": 0,
+        "last_review": {},
         "original_target_path": "",
         "should_sync_back": False,
         "status": "idle",
         "memory": "",
         "_cancel_event": cancel_event,
+        "_log_callback_key": log_callback_key,
         "eval_mode": True,
         "runtime_metrics": {
             "tokens": {"prompt": 0, "completion": 0, "total": 0},
@@ -483,7 +550,224 @@ def _build_initial_state(workspace_dir: str, prompt: str, cancel_event: threadin
     }
 
 
-def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading.Event) -> None:
+def _process_single_item(idx: int, item: Dict[str, Any], task_id: str, base_ws: str,
+                         cancel_ev: threading.Event, model_snap: str, eval_method: str) -> Dict[str, Any]:
+    """处理单条评测用例，返回结果字典。"""
+    rid = uuid.uuid4().hex[:10]
+    item_ws = os.path.join(base_ws, f"{idx:03d}_{rid}")
+    os.makedirs(item_ws, exist_ok=True)
+
+    prompt = build_eval_prompt(item)
+    started = _now()
+    log_key = f"eval:{task_id}:{idx}:{rid}"
+    state = _build_initial_state(item_ws, prompt, cancel_ev, log_key)
+    live_trace: List[Dict[str, Any]] = []
+
+    final_state: Dict[str, Any]
+    err_text = ""
+
+    from agent.backend.config import eval_model_context as _emc
+    from agent.backend.utils import register_log_callback, unregister_log_callback
+
+    def on_log(item_: Dict[str, Any]) -> None:
+        live_trace.append(item_)
+        _update_task_progress(task_id, phase="running_agent", item_index=idx, item=item, trace=live_trace)
+
+    register_log_callback(on_log, session_id=log_key)
+    with _emc(model_snap if model_snap else None):
+        try:
+            from agent.backend.graph import build_graph, run_manual_fallback
+            graph = build_graph()
+            if graph:
+                final_state = graph.invoke(dict(state))
+            else:
+                final_state = run_manual_fallback(dict(state))
+            sync_workspace_file_back(final_state)
+        except Exception as e:
+            err_text = str(e)
+            final_state = dict(state)
+            final_state.setdefault("errors", []).append({"status": "error", "output": err_text})
+        finally:
+            unregister_log_callback(on_log, session_id=log_key)
+
+    finished = _now()
+    fa = str(final_state.get("final_answer") or "")
+    trace = final_state.get("trace") or []
+    errors = final_state.get("errors") or []
+
+    passed: Optional[bool] = None
+    score_detail: Dict[str, Any] = {}
+    if err_text and not fa:
+        passed = False
+        score_detail = {"runner_error": err_text}
+    else:
+        passed, score_detail = decide_passed(eval_method, fa, item, errors, trace)
+
+    trace_serializable = trace
+    try:
+        json.dumps(trace_serializable)
+    except Exception:
+        trace_serializable = [{"phase": "serialize_error", "content": "trace not JSON serializable"}]
+
+    return {
+        "rid": rid, "idx": idx, "item": item, "passed": passed,
+        "score_detail": score_detail, "fa": fa, "err_text": err_text,
+        "trace": trace_serializable, "started": started, "finished": finished,
+        "final_state": final_state, "item_ws": item_ws,
+    }
+
+
+def _compute_quality_metrics(row: Dict[str, Any]) -> None:
+    from agent.backend.eval_quality import (
+        build_contexts_for_ragas, build_radar_vector,
+        compute_judge_scores, compute_ragas_scores,
+    )
+    from agent.backend.eval_security import compute_security_assessment, gather_code_blob_for_security_scan
+    from agent.backend.runtime_metrics import summarize_runtime_metrics
+
+    fs = row["final_state"]
+    iw = row["item_ws"]
+    fa = row["fa"]
+    ctxs = build_contexts_for_ragas(fs, iw)
+    item_desc = row["item"].get("description", "")
+    row["ragas_scores"] = compute_ragas_scores(item_desc, fa, ctxs)
+    row["judge_scores"] = compute_judge_scores(item_desc, fa, ctxs)
+    security_blob = gather_code_blob_for_security_scan(fs, iw)
+    row["security_scores"] = compute_security_assessment(security_blob)
+    rm_blob = fs.get("runtime_metrics")
+    row["rm_summary"] = summarize_runtime_metrics(
+        rm_blob if isinstance(rm_blob, dict) else None
+    )
+    row["radar_vec"] = build_radar_vector(
+        row["ragas_scores"], row["judge_scores"],
+        row["rm_summary"], row["security_scores"],
+    )
+
+
+def _compute_fast_metrics(row: Dict[str, Any]) -> None:
+    from agent.backend.eval_quality import build_radar_vector
+    from agent.backend.eval_security import compute_security_assessment, gather_code_blob_for_security_scan
+    from agent.backend.runtime_metrics import summarize_runtime_metrics
+
+    fs = row["final_state"]
+    iw = row["item_ws"]
+    security_blob = gather_code_blob_for_security_scan(fs, iw)
+    row["ragas_scores"] = {}
+    row["judge_scores"] = {}
+    row["security_scores"] = compute_security_assessment(security_blob)
+    rm_blob = fs.get("runtime_metrics")
+    row["rm_summary"] = summarize_runtime_metrics(
+        rm_blob if isinstance(rm_blob, dict) else None
+    )
+    row["radar_vec"] = build_radar_vector(
+        row["ragas_scores"], row["judge_scores"],
+        row["rm_summary"], row["security_scores"],
+    )
+
+
+def _write_result_row(row: Dict[str, Any], task_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO eval_task_results (
+                id, task_id, item_index, item_key, description_snapshot,
+                status, passed, score_detail, final_answer, trace_json, run_error,
+                ragas_json, judge_json, runtime_metrics_json, radar_json, security_json,
+                started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["rid"], task_id, row["idx"],
+                str(row["item"].get("id", row["idx"])), row["item"].get("description", ""),
+                "completed", 1 if row["passed"] else 0,
+                json.dumps(row["score_detail"], ensure_ascii=False),
+                row["fa"][:50000] if row["fa"] else "",
+                json.dumps(row["trace"], ensure_ascii=False),
+                row["err_text"][:8000] if row["err_text"] else "",
+                json.dumps(row.get("ragas_scores", {}), ensure_ascii=False),
+                json.dumps(row.get("judge_scores", {}), ensure_ascii=False),
+                json.dumps(row.get("rm_summary", {}), ensure_ascii=False),
+                json.dumps(row.get("radar_vec", {}), ensure_ascii=False),
+                json.dumps(row.get("security_scores", {}), ensure_ascii=False),
+                row["started"], row["finished"],
+            ),
+        )
+
+
+def _run_items_sequential(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading.Event,
+                          model_snap: str, eval_method: str, base_ws: str) -> None:
+    passed_n = 0
+    failed_n = 0
+    for idx, item in enumerate(items):
+        if cancel_ev.is_set():
+            break
+        _update_task_progress(task_id, phase="running_agent", item_index=idx, item=item)
+        row = _process_single_item(idx, item, task_id, base_ws, cancel_ev, model_snap, eval_method)
+        _update_task_progress(task_id, phase="scoring", item_index=idx, item=item)
+        if _quality_metrics_enabled():
+            _compute_quality_metrics(row)
+        else:
+            _compute_fast_metrics(row)
+        _write_result_row(row, task_id)
+        if row["passed"]:
+            passed_n += 1
+        else:
+            failed_n += 1
+        _update_task_progress(
+            task_id,
+            phase="item_completed",
+            item_index=idx,
+            item=item,
+            completed=idx + 1,
+            passed=passed_n,
+            failed=failed_n,
+        )
+
+
+def _run_items_concurrent(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading.Event,
+                          model_snap: str, eval_method: str, base_ws: str, concurrency: int) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    passed_n = 0
+    failed_n = 0
+    results_by_idx: Dict[int, Any] = {}
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(_process_single_item, idx, item, task_id, base_ws, cancel_ev, model_snap, eval_method): idx
+            for idx, item in enumerate(items) if not cancel_ev.is_set()
+        }
+        for future in as_completed(futures):
+            if cancel_ev.is_set():
+                continue
+            try:
+                row = future.result()
+                idx = row["idx"]
+                _update_task_progress(task_id, phase="scoring", item_index=idx, item=row["item"])
+                if _quality_metrics_enabled():
+                    _compute_quality_metrics(row)
+                else:
+                    _compute_fast_metrics(row)
+                _write_result_row(row, task_id)
+                if row["passed"]:
+                    passed_n += 1
+                else:
+                    failed_n += 1
+                results_by_idx[idx] = row
+
+                completed = len(results_by_idx)
+                _update_task_progress(
+                    task_id,
+                    phase="item_completed",
+                    item_index=idx,
+                    item=row["item"],
+                    completed=completed,
+                    passed=passed_n,
+                    failed=failed_n,
+                )
+            except Exception:
+                pass
+
+
+def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading.Event, concurrency: int = 1) -> None:
     try:
         task_row = get_eval_task(task_id)
     except LookupError:
@@ -491,8 +775,6 @@ def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading
 
     model_snap = (task_row.get("agent_model_snapshot") or "").strip()
     eval_method = task_row.get("eval_method") or "result"
-    passed_n = 0
-    failed_n = 0
 
     base_ws = os.path.join(WORKSPACES_DIR, task_id)
     try:
@@ -502,121 +784,17 @@ def _eval_worker(task_id: str, items: List[Dict[str, Any]], cancel_ev: threading
         pass
 
     try:
-        from agent.backend.graph import build_graph, run_manual_fallback
-
-        with eval_model_context(model_snap if model_snap else None):
-            for idx, item in enumerate(items):
-                if cancel_ev.is_set():
-                    break
-
-                rid = uuid.uuid4().hex[:10]
-                item_ws = os.path.join(base_ws, f"{idx:03d}_{rid}")
-                os.makedirs(item_ws, exist_ok=True)
-
-                prompt = build_eval_prompt(item)
-                started = _now()
-                state = _build_initial_state(item_ws, prompt, cancel_ev)
-
-                final_state: Dict[str, Any]
-                err_text = ""
-
-                try:
-                    graph = build_graph()
-                    if graph:
-                        final_state = graph.invoke(dict(state))
-                    else:
-                        final_state = run_manual_fallback(dict(state))
-                    sync_workspace_file_back(final_state)
-                except Exception as e:
-                    err_text = str(e)
-                    final_state = dict(state)
-                    final_state.setdefault("errors", []).append({"status": "error", "output": err_text})
-
-                finished = _now()
-                fa = str(final_state.get("final_answer") or "")
-                trace = final_state.get("trace") or []
-                errors = final_state.get("errors") or []
-
-                passed: Optional[bool] = None
-                score_detail: Dict[str, Any] = {}
-                if err_text and not fa:
-                    passed = False
-                    score_detail = {"runner_error": err_text}
-                else:
-                    passed, score_detail = decide_passed(eval_method, fa, item, errors, trace)
-
-                if passed:
-                    passed_n += 1
-                else:
-                    failed_n += 1
-
-                trace_serializable = trace
-                try:
-                    json.dumps(trace_serializable)
-                except Exception:
-                    trace_serializable = [{"phase": "serialize_error", "content": "trace not JSON serializable"}]
-
-                trace_to_store: Any = trace_serializable
-
-                from agent.backend.eval_quality import (
-                    build_contexts_for_ragas,
-                    build_radar_vector,
-                    compute_judge_scores,
-                    compute_ragas_scores,
-                )
-                from agent.backend.eval_security import compute_security_assessment, gather_code_blob_for_security_scan
-                from agent.backend.runtime_metrics import summarize_runtime_metrics
-
-                ctxs = build_contexts_for_ragas(final_state, item_ws)
-                ragas_scores = compute_ragas_scores(item.get("description", "") or prompt, fa, ctxs)
-                judge_scores = compute_judge_scores(item.get("description", "") or prompt, fa, ctxs)
-                security_blob = gather_code_blob_for_security_scan(final_state, item_ws)
-                security_scores = compute_security_assessment(security_blob)
-                rm_blob = final_state.get("runtime_metrics")
-                rm_summary = summarize_runtime_metrics(rm_blob if isinstance(rm_blob, dict) else None)
-                radar_vec = build_radar_vector(ragas_scores, judge_scores, rm_summary, security_scores)
-
-                with get_connection() as conn:
-                    conn.execute(
-                        """INSERT INTO eval_task_results (
-                            id, task_id, item_index, item_key, description_snapshot,
-                            status, passed, score_detail, final_answer, trace_json, run_error,
-                            ragas_json, judge_json, runtime_metrics_json, radar_json, security_json,
-                            started_at, finished_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            rid,
-                            task_id,
-                            idx,
-                            str(item.get("id", idx)),
-                            item.get("description", ""),
-                            "completed",
-                            1 if passed else 0,
-                            json.dumps(score_detail, ensure_ascii=False),
-                            fa[:50000] if fa else "",
-                            json.dumps(trace_to_store, ensure_ascii=False),
-                            err_text[:8000] if err_text else "",
-                            json.dumps(ragas_scores, ensure_ascii=False),
-                            json.dumps(judge_scores, ensure_ascii=False),
-                            json.dumps(rm_summary, ensure_ascii=False),
-                            json.dumps(radar_vec, ensure_ascii=False),
-                            json.dumps(security_scores, ensure_ascii=False),
-                            started,
-                            finished,
-                        ),
-                    )
-                    conn.execute(
-                        """UPDATE eval_tasks SET completed_items = ?, passed_count = ?, failed_count = ?, updated_at = ?
-                           WHERE id = ?""",
-                        (idx + 1, passed_n, failed_n, finished, task_id),
-                    )
+        if concurrency <= 1:
+            _run_items_sequential(task_id, items, cancel_ev, model_snap, eval_method, base_ws)
+        else:
+            _run_items_concurrent(task_id, items, cancel_ev, model_snap, eval_method, base_ws, concurrency)
 
         final_status = "cancelled" if cancel_ev.is_set() else "completed"
 
         with get_connection() as conn:
             conn.execute(
-                """UPDATE eval_tasks SET status = ?, updated_at = ? WHERE id = ?""",
-                (final_status, _now(), task_id),
+                """UPDATE eval_tasks SET status = ?, current_phase = ?, updated_at = ? WHERE id = ?""",
+                (final_status, final_status, _now(), task_id),
             )
 
     except Exception as e:

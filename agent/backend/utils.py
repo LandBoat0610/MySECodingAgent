@@ -111,13 +111,24 @@ def tool_result(
         output: str,
         path: Optional[str] = None,
         returncode: Optional[int] = None,
-        meta: Optional[Dict[str, Any]] = None) -> str:
+        meta: Optional[Dict[str, Any]] = None,
+        stdout: str = "",
+        stderr: str = "",
+        summary: str = "",
+        error_type: Optional[str] = None,
+        modified_files: Optional[List[str]] = None) -> str:
     return json.dumps({
         "status": status,
+        "success": status == "success",
         "output": safe_trim(output),
+        "summary": summary,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error_type": error_type,
         "path": path,
         "returncode": returncode,
         "meta": meta or {},
+        "modified_files": modified_files or [],
     }, ensure_ascii=False)
 
 
@@ -147,7 +158,7 @@ def save_memory(task: str, result: str) -> None:
 
 
 def _serialize_state(state: Dict[str, Any]) -> str:
-    clean = {k: v for k, v in state.items() if k != "_cancel_event"}
+    clean = {k: v for k, v in state.items() if k not in ("_cancel_event", "_log_callback_key")}
     return json.dumps(clean, ensure_ascii=False)
 
 
@@ -155,11 +166,12 @@ def update_session_state(session_id: str, state: Dict[str, Any], status: Optiona
     from agent.backend.database import get_connection
     try:
         snapshot = _serialize_state(state)
+        effective_status = status or state.get("status")
         with get_connection() as conn:
-            if status:
+            if effective_status:
                 conn.execute(
                     "UPDATE sessions SET state_snapshot = ?, status = ? WHERE id = ?",
-                    (snapshot, status, session_id),
+                    (snapshot, effective_status, session_id),
                 )
             else:
                 conn.execute(
@@ -244,7 +256,10 @@ def log_state(
     if state and isinstance(state, dict) and "status" in state:
         item["session_status"] = state["status"]
     trace.append(item)
-    print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
+    try:
+        print(f"[{item['time']}] [{phase.upper()}] {safe_trim(content, 180)}")
+    except UnicodeEncodeError:
+        pass
 
     # 如果提供了 session_id 和 state，则同步到数据库
     if session_id and state:
@@ -252,9 +267,14 @@ def log_state(
 
     # 调用所有注册的回调（用于 WebSocket 实时推送）
     # 每个 session_id 最多一个回调，避免重连积累导致重复推送
+    route_key = session_id
+    if not route_key and state and isinstance(state, dict):
+        route_key = state.get("_log_callback_key") or state.get("session_id")
     with _LOG_CALLBACKS_LOCK:
         callbacks_snapshot = list(_LOG_CALLBACKS.items())
     for sid_key, cb in callbacks_snapshot:
+        if route_key and sid_key not in (route_key, "__global__"):
+            continue
         try:
             cb(item)
         except Exception:

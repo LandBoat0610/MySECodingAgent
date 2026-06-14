@@ -12,8 +12,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "axios": "^1.7.0",
     "echarts": "^6.0.0",
+    "highlight.js": "^11.11.1",
     "marked": "^18.0.3",
     "pinia": "^2.2.0",
     "vue": "^3.5.0",

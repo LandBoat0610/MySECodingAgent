@@ -6,16 +6,34 @@ import {
   deleteProject,
   getSessions,
   createSession,
+  updateSession,
+  deleteSession,
+  clearSession,
   getSessionState,
   sendChat,
   getPlans,
+  getRounds,
   planAction,
+  commandApproval,
+  continueApproval,
   getFileTree,
   getFileContent,
   stopSession,
-  createWebSocket
+  createWebSocket,
+  getToolSettings,
+  updateToolSettings,
+  getSkills,
+  createSkill,
+  updateSkill,
+  deleteSkill,
+  getMemoryContext,
+  getProjectMemory,
+  getProjectHistory,
+  getUserPreferences,
 } from '../api/index.js'
 import { persistProjectId, getPersistedProjectId, persistSessionId, getPersistedSessionId } from '../utils/persistence.js'
+
+const ROUND_PAGE_SIZE = 8
 
 export const useAgentStore = defineStore('agent', () => {
   const projects = ref([])
@@ -29,6 +47,8 @@ export const useAgentStore = defineStore('agent', () => {
   const traceLogs = ref([])
   const chatMessages = ref([])
   const finalAnswer = ref('')
+  const ragSources = ref([])        // RAG 知识来源
+  const memorySummary = ref('')     // 记忆摘要
   const agentRunning = ref(false)
   const wsConnection = ref(null)
   const loading = ref(false)
@@ -39,11 +59,28 @@ export const useAgentStore = defineStore('agent', () => {
   const selectedFile = ref(null)
   const fileContent = ref('')
   const fileLoading = ref(false)
+  const sessionSearch = ref('')
+  const toolSettings = ref([])
+  const toolSettingsLoading = ref(false)
+  const skills = ref([])
+  const skillsLoading = ref(false)
 
   /** 多轮对话追踪 */
   const completedRounds = ref([])     // [{userMessage, traceLogs, plans, finalAnswer}]
   const currentRoundUserMsg = ref('') // 当前轮次用户输入
+  const currentRoundId = ref('')      // 当前轮次 ID，用于隔离本轮计划
   const prevRoundPlanIds = ref(new Set()) // 上一轮已归档的 plan ID 集合
+  const roundsCursor = ref(null)
+  const roundsHasMore = ref(false)
+  const roundsLoadingOlder = ref(false)
+
+  /** 跨对话记忆与上下文工程 */
+  const sessionSummary = ref('')       // 当前会话摘要
+  const projectMemory = ref('')        // 项目记忆文本
+  const userPreferences = ref('')      // 用户偏好文本
+  const relevantHistory = ref([])      // 历史对话列表
+  const contextBudget = ref(12000)     // 上下文预算
+  const memoryLoading = ref(false)     // 记忆加载状态
 
   /** WebSocket「本轮」开始时间戳（毫秒），用于 IDE 实时评测悬浮层耗时 */
   const agentRunStartedAt = ref(null)
@@ -57,7 +94,24 @@ export const useAgentStore = defineStore('agent', () => {
 
   const selectedProject = computed(() => projects.value.find(p => p.id === selectedProjectId.value) || null)
   const selectedSession = computed(() => sessions.value.find(s => s.id === selectedSessionId.value) || null)
-  const pendingPlans = computed(() => plans.value.filter(p => p.status === 'pending'))
+  const filteredSessions = computed(() => {
+    const q = sessionSearch.value.trim().toLowerCase()
+    if (!q) return sessions.value
+    return sessions.value.filter(s => String(s.title || '').toLowerCase().includes(q))
+  })
+  const currentRoundPlans = computed(() => {
+    if (!currentRoundId.value) return plans.value
+    return plans.value.filter(p => (p.round_id || '') === currentRoundId.value)
+  })
+  const pendingPlans = computed(() => currentRoundPlans.value.filter(p => p.status === 'pending'))
+  const pendingCommandApproval = computed(() => {
+    const pending = stateSnapshot.value?.pending_tool_approval
+    return pending && pending.status === 'pending' ? pending : null
+  })
+  const pendingLoopApproval = computed(() => {
+    const pending = stateSnapshot.value?.pending_loop_approval
+    return pending && pending.status === 'pending' ? pending : null
+  })
 
   function setError(err) {
     error.value = typeof err === 'string' ? err : (err.response?.data?.detail || err.message || 'Unknown error')
@@ -116,6 +170,12 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  function resetRoundPaging() {
+    roundsCursor.value = null
+    roundsHasMore.value = false
+    roundsLoadingOlder.value = false
+  }
+
   function selectProject(projectId) {
     disconnectWebSocket()
     selectedProjectId.value = projectId
@@ -128,6 +188,8 @@ export const useAgentStore = defineStore('agent', () => {
     traceLogs.value = []
     chatMessages.value = []
     finalAnswer.value = ''
+    ragSources.value = []
+    memorySummary.value = ''
     sessionStatus.value = 'idle'
     stateSnapshot.value = null
     selectedFile.value = null
@@ -135,7 +197,9 @@ export const useAgentStore = defineStore('agent', () => {
     agentRunStartedAt.value = null
     completedRounds.value = []
     currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
     prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
     resetLivePerfForNewRun()
     fetchSessions()
     fetchFileTree()
@@ -163,6 +227,106 @@ export const useAgentStore = defineStore('agent', () => {
     return session
   }
 
+  async function doRenameSession(sessionId, title) {
+    if (!selectedProjectId.value) return null
+    clearError()
+    try {
+      const updated = await updateSession(selectedProjectId.value, sessionId, { title })
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx >= 0) sessions.value[idx] = updated
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doTogglePinSession(sessionId) {
+    if (!selectedProjectId.value) return null
+    const session = sessions.value.find(s => s.id === sessionId)
+    if (!session) return null
+    clearError()
+    try {
+      const updated = await updateSession(selectedProjectId.value, sessionId, { pinned: !session.pinned })
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx >= 0) sessions.value[idx] = updated
+      sessions.value = [...sessions.value].sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.created_at) - new Date(a.created_at)
+      )
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doDeleteSession(sessionId) {
+    if (!selectedProjectId.value) return
+    clearError()
+    try {
+      await deleteSession(selectedProjectId.value, sessionId)
+      if (selectedSessionId.value === sessionId) {
+        startNewSession()
+      }
+      sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doClearSession(sessionId) {
+    if (!selectedProjectId.value) return
+    clearError()
+    try {
+      await clearSession(selectedProjectId.value, sessionId)
+      const session = sessions.value.find(s => s.id === sessionId)
+      if (session) session.status = 'idle'
+      if (selectedSessionId.value === sessionId) {
+        plans.value = []
+        traceLogs.value = []
+        chatMessages.value = []
+        finalAnswer.value = ''
+        stateSnapshot.value = null
+        sessionStatus.value = 'idle'
+        agentRunning.value = false
+        completedRounds.value = []
+        currentRoundUserMsg.value = ''
+        currentRoundId.value = ''
+        prevRoundPlanIds.value = new Set()
+        resetRoundPaging()
+        resetLivePerfForNewRun()
+      }
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  function startNewSession() {
+    disconnectWebSocket()
+    selectedSessionId.value = null
+    persistSessionId(null)
+    plans.value = []
+    traceLogs.value = []
+    chatMessages.value = []
+    finalAnswer.value = ''
+    ragSources.value = []
+    memorySummary.value = ''
+    stateSnapshot.value = null
+    sessionStatus.value = 'idle'
+    agentRunning.value = false
+    agentRunStartedAt.value = null
+    completedRounds.value = []
+    currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
+    prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
+    resetLivePerfForNewRun()
+    // 加载跨对话记忆上下文（项目记忆 + 历史 + 偏好）
+    fetchMemoryContext()
+  }
+
   async function selectSession(sessionId) {
     disconnectWebSocket()
     selectedSessionId.value = sessionId
@@ -176,9 +340,13 @@ export const useAgentStore = defineStore('agent', () => {
     agentRunStartedAt.value = null
     completedRounds.value = []
     currentRoundUserMsg.value = ''
+    currentRoundId.value = ''
     prevRoundPlanIds.value = new Set()
+    resetRoundPaging()
     resetLivePerfForNewRun()
     await restoreSessionState()
+    // 加载跨对话记忆上下文（项目记忆 + 历史 + 偏好）
+    fetchMemoryContext()
   }
 
   async function restoreSessionState() {
@@ -187,6 +355,7 @@ export const useAgentStore = defineStore('agent', () => {
       const stateResp = await getSessionState(selectedProjectId.value, selectedSessionId.value)
       sessionStatus.value = stateResp.status
       stateSnapshot.value = stateResp.snapshot
+      currentRoundId.value = stateResp.snapshot?.current_round_id || currentRoundId.value || ''
 
       const msgs = stateResp.snapshot?.messages || []
       chatMessages.value = msgs
@@ -203,9 +372,12 @@ export const useAgentStore = defineStore('agent', () => {
           tool_calls: m.tool_calls || null
         }))
 
-      await fetchPlans()
+      await fetchRounds()
+      if (completedRounds.value.length === 0 && !currentRoundUserMsg.value) {
+        await fetchPlans()
+      }
 
-      if (['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step'].includes(stateResp.status)) {
+      if (['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step'].includes(stateResp.status)) {
         connectWebSocket()
       }
 
@@ -237,6 +409,96 @@ export const useAgentStore = defineStore('agent', () => {
       plans.value = await getPlans(selectedProjectId.value, selectedSessionId.value)
     } catch (e) {
       setError(e)
+    }
+  }
+
+  function mapRound(r) {
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      userMessage: r.user_message,
+      traceLogs: r.trace_json || [],
+      plans: r.plans || [],
+      finalAnswer: r.final_answer || '',
+      status: r.status,
+    }
+  }
+
+  function applyRoundPage(mapped, appendOlder = false) {
+    const activeStatuses = new Set(['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step'])
+    const last = mapped[mapped.length - 1]
+    const hasActiveRound = last && activeStatuses.has(last.status)
+
+    if (appendOlder) {
+      completedRounds.value = [...mapped, ...completedRounds.value]
+      if (mapped.length > 0) roundsCursor.value = mapped[0].createdAt
+      roundsHasMore.value = mapped.length >= ROUND_PAGE_SIZE
+      prevRoundPlanIds.value = new Set(completedRounds.value.flatMap(r => (r.plans || []).map(p => p.id)))
+      return
+    }
+
+    completedRounds.value = hasActiveRound ? mapped.slice(0, -1) : mapped
+    if (hasActiveRound) {
+      currentRoundUserMsg.value = last.userMessage
+      currentRoundId.value = last.id
+      traceLogs.value = last.traceLogs
+      plans.value = last.plans
+      finalAnswer.value = last.finalAnswer
+    } else {
+      currentRoundUserMsg.value = ''
+      currentRoundId.value = ''
+      traceLogs.value = []
+      plans.value = []
+      finalAnswer.value = ''
+    }
+    roundsCursor.value = mapped[0]?.createdAt || null
+    roundsHasMore.value = mapped.length >= ROUND_PAGE_SIZE
+    prevRoundPlanIds.value = new Set(completedRounds.value.flatMap(r => (r.plans || []).map(p => p.id)))
+  }
+
+  async function fetchRounds(options = {}) {
+    if (!selectedProjectId.value || !selectedSessionId.value) return
+    try {
+      const appendOlder = !!options.appendOlder
+      const rounds = await getRounds(selectedProjectId.value, selectedSessionId.value, {
+        limit: ROUND_PAGE_SIZE,
+        before: appendOlder ? roundsCursor.value : '',
+      })
+      applyRoundPage((rounds || []).map(mapRound), appendOlder)
+    } catch (e) {
+      setError(e)
+    }
+  }
+
+  async function loadOlderRounds() {
+    if (!roundsHasMore.value || roundsLoadingOlder.value || !roundsCursor.value) return false
+    roundsLoadingOlder.value = true
+    try {
+      await fetchRounds({ appendOlder: true })
+      return true
+    } finally {
+      roundsLoadingOlder.value = false
+    }
+  }
+
+  /** 跨对话记忆：加载记忆上下文 */
+  async function fetchMemoryContext() {
+    if (!selectedProjectId.value) return
+    memoryLoading.value = true
+    try {
+      const ctx = await getMemoryContext(
+        selectedProjectId.value,
+        selectedSessionId.value || ''
+      )
+      sessionSummary.value = ctx.session_summary || ''
+      projectMemory.value = ctx.project_memory || ''
+      userPreferences.value = ctx.user_preferences || ''
+      relevantHistory.value = ctx.relevant_history || []
+      contextBudget.value = ctx.context_budget || 12000
+    } catch (e) {
+      console.warn('Failed to load memory context:', e)
+    } finally {
+      memoryLoading.value = false
     }
   }
 
@@ -276,6 +538,14 @@ export const useAgentStore = defineStore('agent', () => {
         if (data.type === 'trace' && data.data) {
           traceLogs.value.push(data.data)
           const meta = data.data.meta || {}
+          // 提取 RAG 来源
+          if (meta.rag_sources && Array.isArray(meta.rag_sources)) {
+            ragSources.value = [...ragSources.value, ...meta.rag_sources]
+          }
+          // 提取记忆摘要
+          if (meta.memory_summary) {
+            memorySummary.value = meta.memory_summary
+          }
           if (
             meta.tokens_total != null ||
             meta.tool_events_count != null ||
@@ -293,10 +563,24 @@ export const useAgentStore = defineStore('agent', () => {
                   : livePerf.value.toolAvgLatencyMs
             }
           }
+          if (data.data.phase === 'tool_approval' && meta.pending_tool_approval) {
+            stateSnapshot.value = {
+              ...(stateSnapshot.value || {}),
+              status: data.data.session_status || 'awaiting_tool_approval',
+              pending_tool_approval: meta.pending_tool_approval,
+            }
+            sessionStatus.value = data.data.session_status || 'awaiting_tool_approval'
+          }
           if (data.data.session_status) {
             sessionStatus.value = data.data.session_status
             if (data.data.session_status === 'awaiting_approval') {
               fetchPlans()
+            }
+            if (data.data.session_status === 'awaiting_tool_approval') {
+              restoreSessionState()
+            }
+            if (data.data.session_status === 'awaiting_continue_approval') {
+              restoreSessionState()
             }
           }
           // Agent 完成一个步骤后刷新文件树（及时展示新建/修改的文件）
@@ -323,6 +607,7 @@ export const useAgentStore = defineStore('agent', () => {
           sessionStatus.value = data.status || 'completed'
           fetchPlans()
           restoreSessionState()
+          fetchSessions()
           // Agent 结束后：刷新文件树，并刷新当前打开的文件内容
           fetchFileTree()
           if (selectedFile.value) {
@@ -337,6 +622,7 @@ export const useAgentStore = defineStore('agent', () => {
           sessionStatus.value = 'stopped'
           fetchPlans()
           restoreSessionState()
+          fetchSessions()
         }
       } catch (e) {
         console.error('WebSocket message parse error:', e)
@@ -352,7 +638,7 @@ export const useAgentStore = defineStore('agent', () => {
         agentRunStartedAt.value = null
         return
       }
-      const activeStates = ['running', 'awaiting_approval', 'approved', 'needs_fix', 'next_step']
+      const activeStates = ['running', 'awaiting_approval', 'awaiting_tool_approval', 'awaiting_continue_approval', 'approved', 'needs_fix', 'next_step']
       if (activeStates.includes(sessionStatus.value)) {
         wsReconnectAttempts.value++
         if (wsReconnectAttempts.value <= WS_MAX_RECONNECT) {
@@ -389,12 +675,26 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function doSendChat(message) {
     clearError()
+    if (!selectedProjectId.value) {
+      const e = new Error('请先选择或创建一个项目')
+      setError(e)
+      throw e
+    }
+    if (!selectedSessionId.value || sessionStatus.value === 'stopped') {
+      const session = await createSession(selectedProjectId.value, { initial_message: message })
+      sessions.value.unshift(session)
+      selectedSessionId.value = session.id
+      persistSessionId(session.id)
+      sessionStatus.value = session.status || 'idle'
+      // 新会话自动加载跨对话记忆上下文
+      fetchMemoryContext()
+    }
     // 将当前轮归档到历史（如果本轮已有用户消息）
     if (currentRoundUserMsg.value) {
       completedRounds.value.push({
         userMessage: currentRoundUserMsg.value,
         traceLogs: [...traceLogs.value],
-        plans: [...plans.value].filter(p => !prevRoundPlanIds.value.has(p.id)),
+        plans: [...currentRoundPlans.value].filter(p => !prevRoundPlanIds.value.has(p.id)),
         finalAnswer: finalAnswer.value,
       })
     }
@@ -406,26 +706,29 @@ export const useAgentStore = defineStore('agent', () => {
     plans.value = []
     stateSnapshot.value = null   // 清空旧快照，防止前端读到上一轮的 task_list / status
     currentRoundUserMsg.value = message
+    currentRoundId.value = ''
     agentRunStartedAt.value = null
     resetLivePerfForNewRun()
     chatMessages.value.push({ role: 'user', content: message })
     try {
       const resp = await sendChat(selectedProjectId.value, selectedSessionId.value, message)
+      currentRoundId.value = resp.round_id || currentRoundId.value
       sessionStatus.value = resp.status
       connectWebSocket()
       return resp
     } catch (e) {
       chatMessages.value.pop()
       currentRoundUserMsg.value = ''
+      currentRoundId.value = ''
       setError(e)
       throw e
     }
   }
 
-  async function doPlanAction(planId, action) {
+  async function doPlanAction(planId, action, feedback = '') {
     clearError()
     try {
-      const resp = await planAction(selectedProjectId.value, selectedSessionId.value, planId, action)
+      const resp = await planAction(selectedProjectId.value, selectedSessionId.value, planId, action, feedback)
       const plan = plans.value.find(p => p.id === planId)
       if (plan) {
         plan.status = resp.status
@@ -440,6 +743,44 @@ export const useAgentStore = defineStore('agent', () => {
       } else if (action === 'skip') {
         sessionStatus.value = 'skipped'
         agentRunning.value = false
+      }
+      return resp
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doCommandApproval(approvalId, action, feedback = '') {
+    clearError()
+    try {
+      const resp = await commandApproval(selectedProjectId.value, selectedSessionId.value, approvalId, action, feedback)
+      if (stateSnapshot.value?.pending_tool_approval?.id === approvalId) {
+        stateSnapshot.value.pending_tool_approval.status = resp.status
+        stateSnapshot.value.pending_tool_approval.feedback = feedback
+      }
+      sessionStatus.value = 'running'
+      connectWebSocket()
+      return resp
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doContinueApproval(approvalId, action) {
+    clearError()
+    try {
+      const resp = await continueApproval(selectedProjectId.value, selectedSessionId.value, approvalId, action)
+      if (stateSnapshot.value?.pending_loop_approval?.id === approvalId) {
+        stateSnapshot.value.pending_loop_approval.status = resp.status
+      }
+      sessionStatus.value = action === 'continue' ? 'running' : 'stopped'
+      if (action === 'continue') {
+        connectWebSocket()
+      } else {
+        agentRunning.value = false
+        disconnectWebSocket()
       }
       return resp
     } catch (e) {
@@ -513,50 +854,163 @@ export const useAgentStore = defineStore('agent', () => {
     chatMessages.value.push({ role: 'assistant', content })
   }
 
+  async function fetchToolSettings() {
+    clearError()
+    toolSettingsLoading.value = true
+    try {
+      const resp = await getToolSettings()
+      toolSettings.value = resp.tools || []
+    } catch (e) {
+      setError(e)
+    } finally {
+      toolSettingsLoading.value = false
+    }
+  }
+
+  async function setToolEnabled(name, enabled) {
+    clearError()
+    const prev = toolSettings.value.map(t => ({ ...t }))
+    toolSettings.value = toolSettings.value.map(t => t.name === name ? { ...t, enabled } : t)
+    try {
+      const resp = await updateToolSettings({ tools: { [name]: enabled } })
+      toolSettings.value = resp.tools || toolSettings.value
+    } catch (e) {
+      toolSettings.value = prev
+      setError(e)
+      throw e
+    }
+  }
+
+  async function fetchSkills() {
+    clearError()
+    skillsLoading.value = true
+    try {
+      const resp = await getSkills()
+      skills.value = resp.skills || []
+    } catch (e) {
+      setError(e)
+    } finally {
+      skillsLoading.value = false
+    }
+  }
+
+  async function doCreateSkill(data) {
+    clearError()
+    try {
+      const skill = await createSkill(data)
+      skills.value.push(skill)
+      return skill
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doUpdateSkill(skillId, data) {
+    clearError()
+    try {
+      const updated = await updateSkill(skillId, data)
+      const idx = skills.value.findIndex(s => s.id === skillId)
+      if (idx >= 0) skills.value[idx] = updated
+      return updated
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
+  async function doDeleteSkill(skillId) {
+    clearError()
+    try {
+      await deleteSkill(skillId)
+      skills.value = skills.value.filter(s => s.id !== skillId)
+    } catch (e) {
+      setError(e)
+      throw e
+    }
+  }
+
   return {
     projects,
     selectedProjectId,
     sessions,
+    filteredSessions,
+    sessionSearch,
     selectedSessionId,
     sessionStatus,
     stateSnapshot,
     fileTree,
     plans,
+    currentRoundPlans,
     traceLogs,
     chatMessages,
     finalAnswer,
+    ragSources,
+    memorySummary,
     agentRunning,
     wsConnection,
     loading,
     error,
     agentRunStartedAt,
     livePerf,
+    toolSettings,
+    toolSettingsLoading,
+    skills,
+    skillsLoading,
     selectedProject,
     selectedSession,
     pendingPlans,
+    pendingCommandApproval,
+    pendingLoopApproval,
     fetchProjects,
     doCreateProject,
     selectProject,
     fetchSessions,
+    doRenameSession,
+    doTogglePinSession,
+    doDeleteSession,
+    doClearSession,
     doCreateSession,
+    startNewSession,
     selectSession,
     restoreSessionState,
     fetchFileTree,
     fetchPlans,
+    fetchRounds,
+    loadOlderRounds,
     connectWebSocket,
     disconnectWebSocket,
     doSendChat,
     doPlanAction,
+    doCommandApproval,
+    doContinueApproval,
     doStopSession,
     doDeleteProject,
     selectedFile,
     fileContent,
     fileLoading,
     fetchFileContent,
+    fetchToolSettings,
+    setToolEnabled,
+    fetchSkills,
+    doCreateSkill,
+    doUpdateSkill,
+    doDeleteSkill,
     addAssistantMessage,
     clearError,
     completedRounds,
     currentRoundUserMsg,
+    currentRoundId,
     prevRoundPlanIds,
+    roundsHasMore,
+    roundsLoadingOlder,
+    // 跨对话记忆
+    sessionSummary,
+    projectMemory,
+    userPreferences,
+    relevantHistory,
+    contextBudget,
+    memoryLoading,
+    fetchMemoryContext,
   }
 })

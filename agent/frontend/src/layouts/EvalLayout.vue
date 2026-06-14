@@ -83,7 +83,7 @@ onMounted(() => {
 .back-to-ide {
   color: var(--text-secondary);
   text-decoration: none;
-  font-size: 13px;
+  font-size: 14px;
   padding: 6px 10px;
   border-radius: 6px;
 }
@@ -109,7 +109,7 @@ onMounted(() => {
   border-radius: 8px;
   color: var(--text-secondary);
   text-decoration: none;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
 }
 
@@ -135,5 +135,12 @@ onMounted(() => {
   max-width: 1100px;
   margin-left: auto;
   margin-right: auto;
+}
+
+/* ---- 响应式 ---- */
+@media (max-width: 700px) {
+  .eval-topbar-inner { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .eval-tabs { flex-wrap: wrap; }
+  .eval-main-inner { padding: 12px; }
 }
 </style>

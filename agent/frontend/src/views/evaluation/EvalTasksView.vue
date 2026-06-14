@@ -1,22 +1,18 @@
 <template>
   <div class="eval-page">
     <section class="card">
-      <h2 class="card-title">Agent 版本配置</h2>
-      <p class="card-desc">创建评测任务时会快照当前模型与版本标签；实际推理在评测线程内使用该快照。</p>
+      <h2 class="card-title">Agent 模型配置</h2>
+      <p class="card-desc">创建评测任务时会快照当前模型 ID；评测线程会使用该模型快照进行推理。</p>
       <div v-if="cfg.error" class="banner-error">{{ cfg.error }}</div>
-      <div class="form-grid">
+      <div class="form-grid single">
         <label class="field">
           <span>模型 ID</span>
           <input v-model="draftModel" type="text" placeholder="例如 gpt-4o-mini" />
         </label>
-        <label class="field">
-          <span>版本标签</span>
-          <input v-model="draftLabel" type="text" placeholder="用于区分算法/配置快照" />
-        </label>
       </div>
       <div class="actions">
         <button class="btn btn-primary" :disabled="cfg.loading" @click="handleSaveConfig">
-          {{ cfg.loading ? '保存中…' : '保存为当前 IDE 配置' }}
+          {{ cfg.loading ? '保存中…' : '保存模型配置' }}
         </button>
         <button class="btn btn-ghost" type="button" :disabled="cfg.loading" @click="reloadConfig">重新加载</button>
       </div>
@@ -133,7 +129,7 @@
 
     <section class="card">
       <h2 class="card-title">评测任务列表</h2>
-      <p class="card-desc">启动后由后端依次调用与 IDE 相同的 LangGraph Agent 对每条数据推理；结果写入数据库。进行中列表每 3 秒自动刷新。</p>
+      <p class="card-desc">启动后由后端依次调用与 IDE 相同的 LangGraph Agent 对每条数据推理；结果写入数据库。进行中列表每 1 秒自动刷新。</p>
       <table class="task-table wide">
         <thead>
           <tr>
@@ -154,7 +150,26 @@
             <td>{{ methodLabel(t.eval_method) }}</td>
             <td class="mono muted">{{ t.agent_model_snapshot || '—' }}</td>
             <td><span :class="['pill', t.status]">{{ t.status }}</span></td>
-            <td class="muted">{{ t.completed_items }} / {{ t.total_items }}</td>
+            <td class="progress-cell">
+              <div class="progress-line">
+                <span class="muted">{{ t.completed_items }} / {{ t.total_items }}</span>
+                <span v-if="taskIsBusy(t)" class="tiny">{{ taskPercent(t) }}%</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" :style="{ width: taskPercent(t) + '%' }"></div>
+              </div>
+              <div v-if="taskIsBusy(t)" class="current-item">
+                <span class="phase-dot"></span>
+                {{ phaseLabel(t.current_phase) }}
+                <template v-if="Number(t.current_item_index) >= 0">
+                  · #{{ Number(t.current_item_index) + 1 }}
+                  <span v-if="t.current_item_key">({{ t.current_item_key }})</span>
+                </template>
+              </div>
+              <div v-if="taskIsBusy(t) && t.current_item_description" class="current-desc">
+                {{ snippet(t.current_item_description) }}
+              </div>
+            </td>
             <td>{{ t.passed_count }} / {{ t.failed_count }}</td>
             <td class="row-actions">
               <button
@@ -241,6 +256,48 @@
         </div>
         <div v-if="resultsLoading" class="modal-body muted">加载中…</div>
         <div v-else class="modal-body scroll">
+          <div v-if="currentResultsTask && taskIsBusy(currentResultsTask)" class="live-replay">
+            <div class="live-head">
+              <div>
+                <h4>正在执行</h4>
+                <p class="tiny muted">
+                  {{ phaseLabel(currentResultsTask.current_phase) }}
+                  <template v-if="Number(currentResultsTask.current_item_index) >= 0">
+                    · 第 {{ Number(currentResultsTask.current_item_index) + 1 }} / {{ currentResultsTask.total_items }} 条
+                  </template>
+                  <template v-if="currentResultsTask.current_item_key">
+                    · {{ currentResultsTask.current_item_key }}
+                  </template>
+                </p>
+              </div>
+              <span class="live-badge">实时</span>
+            </div>
+            <p v-if="currentResultsTask.current_item_description" class="live-desc">
+              {{ currentResultsTask.current_item_description }}
+            </p>
+            <ol v-if="friendlyTrace(currentResultsTask.current_trace_json).length" class="trace-flow live-flow">
+              <li
+                v-for="(step, si) in friendlyTrace(currentResultsTask.current_trace_json)"
+                :key="'live-st-' + si"
+                class="trace-step"
+              >
+                <div class="step-meta">
+                  <span class="phase-pill">{{ step.phaseLabel }}</span>
+                  <span class="step-time">{{ step.time }}</span>
+                  <span v-if="step.session_status" class="sess">{{ step.session_status }}</span>
+                </div>
+                <div class="step-title">{{ step.title }}</div>
+                <div v-if="step.summary" class="step-body">{{ step.summary }}</div>
+                <div v-if="step.detail" class="step-detail">{{ step.detail }}</div>
+                <details v-if="step.rawDetail" class="raw-detail">
+                  <summary>查看原始信息</summary>
+                  <pre>{{ step.rawDetail }}</pre>
+                </details>
+              </li>
+            </ol>
+            <p v-else class="muted tiny">Agent 已开始排队，等待第一条执行轨迹。</p>
+          </div>
+
           <table class="task-table compact">
             <thead>
               <tr>
@@ -332,20 +389,22 @@
 
             <div class="replay-columns" style="margin-top:14px">
               <div class="replay-col">
-                <h5 class="sub-head">思考路径与状态</h5>
-                <p class="tiny muted">按时间顺序展示 LangGraph 节点写入的 phase、内容与精简 state_outline（用于演示内部状态流转）。</p>
+                <h5 class="sub-head">执行步骤</h5>
+                <p class="tiny muted">默认只展示每一步正在做什么、产生了什么结果；需要排查时可展开查看原始信息。</p>
                 <ol class="trace-flow">
-                  <li v-for="(step, si) in normalizedTrace(selectedReplay.trace_json)" :key="'st-' + si">
+                  <li v-for="(step, si) in friendlyTrace(selectedReplay.trace_json)" :key="'st-' + si" class="trace-step">
                     <div class="step-meta">
-                      <span class="phase-pill">{{ step.phase }}</span>
+                      <span class="phase-pill">{{ step.phaseLabel }}</span>
                       <span class="step-time">{{ step.time }}</span>
                       <span v-if="step.session_status" class="sess">{{ step.session_status }}</span>
                     </div>
-                    <pre v-if="step.state_outline" class="outline">{{ formatJson(step.state_outline) }}</pre>
-                    <div class="step-body">{{ step.content }}</div>
-                    <div v-if="step.meta && Object.keys(step.meta).length" class="mini-meta">
-                      {{ formatJson(step.meta) }}
-                    </div>
+                    <div class="step-title">{{ step.title }}</div>
+                    <div v-if="step.summary" class="step-body">{{ step.summary }}</div>
+                    <div v-if="step.detail" class="step-detail">{{ step.detail }}</div>
+                    <details v-if="step.rawDetail" class="raw-detail">
+                      <summary>查看原始信息</summary>
+                      <pre>{{ step.rawDetail }}</pre>
+                    </details>
                   </li>
                 </ol>
                 <p v-if="!normalizedTrace(selectedReplay.trace_json).length" class="muted tiny">暂无轨迹数据。</p>
@@ -460,7 +519,6 @@ async function confirmRemoveTask(t) {
 }
 
 const draftModel = ref('')
-const draftLabel = ref('')
 const uploadName = ref('')
 const pickedFile = ref(null)
 const jsonName = ref('')
@@ -493,10 +551,9 @@ watch(resultsOpen, open => {
 })
 
 watch(
-  () => [cfg.model, cfg.versionLabel],
+  () => cfg.model,
   () => {
     draftModel.value = cfg.model
-    draftLabel.value = cfg.versionLabel
   },
   { immediate: true }
 )
@@ -505,10 +562,33 @@ const canCreateTask = computed(
   () => newTaskName.value.trim() && newTaskDatasetId.value && !ev.loading
 )
 
+const currentResultsTask = computed(() =>
+  ev.tasks.find(t => t.id === resultsTaskId.value) || null
+)
+
 function methodLabel(m) {
   if (m === 'process') return '面向过程'
   if (m === 'combined') return '联合评估'
   return '面向结果'
+}
+
+function phaseLabel(phase) {
+  const map = {
+    queued: '排队中',
+    running_agent: 'Agent 执行中',
+    scoring: '结果评分中',
+    item_completed: '单条完成',
+    completed: '已完成',
+    cancelled: '已取消',
+    failed: '失败'
+  }
+  return map[phase] || phase || '准备中'
+}
+
+function taskPercent(t) {
+  const total = Number(t.total_items) || 0
+  if (!total) return 0
+  return Math.min(100, Math.round((Number(t.completed_items) || 0) / total * 100))
 }
 
 /** 评测线程仍在收尾（含取消中） */
@@ -535,6 +615,217 @@ function normalizedTrace(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
+function friendlyTrace(raw) {
+  return normalizedTrace(raw).map((step, index) => friendlyStep(step, index))
+}
+
+function friendlyStep(step, index) {
+  const phase = step?.phase || ''
+  const content = String(step?.content || '').trim()
+  const meta = step?.meta && typeof step.meta === 'object' ? step.meta : {}
+  const outline = step?.state_outline && typeof step.state_outline === 'object' ? step.state_outline : {}
+  const parsed = parseMaybeJson(content)
+  const title = stepTitle(phase, content, meta, parsed, index)
+  const summary = stepSummary(phase, content, meta, parsed)
+  const detail = stepDetail(step, parsed)
+  const rawDetail = rawStepDetail(step)
+  return {
+    ...step,
+    phaseLabel: tracePhaseLabel(phase),
+    title,
+    summary,
+    detail,
+    rawDetail,
+    state_outline: outline
+  }
+}
+
+function tracePhaseLabel(phase) {
+  const map = {
+    plan: '制定计划',
+    planner: '制定计划',
+    reason: '思考',
+    act: '调用工具',
+    observe: '工具结果',
+    verify: '验证',
+    repair: '修复',
+    finalize: '总结',
+    done: '完成',
+    error: '异常',
+    tool_approval: '等待确认',
+    continue_approval: '等待继续'
+  }
+  return map[phase] || phaseLabel(phase) || '步骤'
+}
+
+function stepTitle(phase, content, meta, parsed, index) {
+  const toolName = meta.tool || parsed?.tool || extractToolName(content)
+  if (phase === 'act' && toolName) return `调用工具：${toolDisplayName(toolName)}`
+  if (phase === 'observe' && toolName) return `工具返回：${toolDisplayName(toolName)}`
+  if (phase === 'plan' || phase === 'planner') return '生成执行计划'
+  if (phase === 'verify') return '检查执行结果'
+  if (phase === 'repair') return '尝试修复问题'
+  if (phase === 'finalize' || phase === 'done') return '整理最终答复'
+  if (phase === 'error') return '执行出现异常'
+  if (phase === 'tool_approval') return '等待用户确认命令'
+  if (phase === 'continue_approval') return '等待用户确认继续'
+  const first = firstMeaningfulLine(content)
+  return first ? clampText(first, 42) : `步骤 ${index + 1}`
+}
+
+function stepSummary(phase, content, meta, parsed) {
+  if (!content && !Object.keys(meta).length) return ''
+  if (phase === 'act') {
+    return summarizeToolCall(content, meta, parsed)
+  }
+  if (phase === 'observe') {
+    return summarizeToolResult(content, meta, parsed)
+  }
+  if (phase === 'plan' || phase === 'planner') {
+    const items = planItems(content)
+    if (items.length) return items.slice(0, 4).join('；')
+  }
+  if (phase === 'finalize' || phase === 'done') {
+    return clampText(stripMarkdownNoise(content), 180)
+  }
+  return clampText(stripMarkdownNoise(content), 180)
+}
+
+function stepDetail(step, parsed) {
+  const meta = step?.meta || {}
+  const bits = []
+  if (meta.tool && meta.ok != null) bits.push(meta.ok ? '工具执行成功' : '工具执行失败')
+  if (meta.elapsed_ms != null) bits.push(`耗时 ${Math.round(meta.elapsed_ms)} ms`)
+  if (meta.tokens_total != null) bits.push(`Token ${Number(meta.tokens_total).toLocaleString()}`)
+  if (parsed?.exit_code != null) bits.push(`退出码 ${parsed.exit_code}`)
+  if (parsed?.summary) bits.push(clampText(String(parsed.summary), 80))
+  return bits.join(' · ')
+}
+
+function rawStepDetail(step) {
+  const raw = {}
+  if (step?.content) raw.content = step.content
+  if (step?.state_outline && Object.keys(step.state_outline).length) raw.state_outline = step.state_outline
+  if (step?.meta && Object.keys(step.meta).length) raw.meta = step.meta
+  if (!Object.keys(raw).length) return ''
+  const text = formatJson(raw)
+  return text.length > 6000 ? text.slice(0, 6000) + '\n... 已截断' : text
+}
+
+function summarizeToolCall(content, meta, parsed) {
+  const tool = meta.tool || parsed?.tool || extractToolName(content)
+  const args = parsed?.arguments || parsed?.args || meta.args || meta.arguments || {}
+  if (tool === 'execute_bash') {
+    const cmd = args.cmd || args.command || extractJsonField(content, 'cmd') || extractJsonField(content, 'command')
+    return cmd ? `准备执行命令：${clampText(cmd, 120)}` : '准备执行一条命令'
+  }
+  if (tool === 'write_file') {
+    const path = args.path || extractJsonField(content, 'path')
+    return path ? `准备写入文件：${path}` : '准备写入文件'
+  }
+  if (tool === 'read_file' || tool === 'read_file_range') {
+    const path = args.path || extractJsonField(content, 'path')
+    return path ? `读取文件：${path}` : '读取文件内容'
+  }
+  if (tool === 'apply_patch') return '准备应用代码补丁'
+  if (tool === 'run_tests') return '准备运行测试'
+  if (tool === 'run_lint') return '准备运行代码检查'
+  if (tool === 'list_files') return '查看工作区文件结构'
+  if (tool === 'search_code') return `搜索代码：${clampText(args.query || args.pattern || '', 80) || '按关键词检索'}`
+  if (tool === 'rag_search') return `检索知识库：${clampText(args.query || '', 100) || '查找相关资料'}`
+  return tool ? `准备使用 ${toolDisplayName(tool)}` : clampText(stripMarkdownNoise(content), 140)
+}
+
+function summarizeToolResult(content, meta, parsed) {
+  const tool = meta.tool || parsed?.tool || extractToolName(content)
+  const ok = meta.ok ?? parsed?.ok ?? parsed?.success
+  const status = ok === false ? '失败' : ok === true ? '成功' : ''
+  const output = parsed?.output || parsed?.stdout || parsed?.result || parsed?.content || content
+  if (tool === 'execute_bash') {
+    const exit = parsed?.exit_code != null ? `，退出码 ${parsed.exit_code}` : ''
+    return `命令执行${status || '完成'}${exit}。${clampText(cleanOutput(output), 140)}`
+  }
+  if (tool === 'run_tests') return `测试运行${status || '完成'}。${clampText(cleanOutput(output), 140)}`
+  if (tool === 'write_file') return `文件写入${status || '完成'}。${clampText(cleanOutput(output), 120)}`
+  if (tool === 'read_file' || tool === 'read_file_range') return `文件读取完成。${clampText(cleanOutput(output), 120)}`
+  if (tool === 'list_files') return `目录查看完成。${clampText(cleanOutput(output), 120)}`
+  if (tool === 'rag_search') return `知识库检索完成。${clampText(cleanOutput(output), 140)}`
+  return `${status ? `执行${status}。` : ''}${clampText(cleanOutput(output), 160)}`
+}
+
+function toolDisplayName(tool) {
+  const names = {
+    execute_bash: '执行命令',
+    list_files: '列出文件',
+    read_file: '读取文件',
+    read_file_range: '分段读取文件',
+    write_file: '写入文件',
+    search_code: '搜索代码',
+    web_search: '联网搜索',
+    fetch_url: '抓取网页',
+    apply_patch: '应用补丁',
+    get_git_diff: '查看 Git 差异',
+    run_tests: '运行测试',
+    run_lint: '代码检查',
+    rag_search: '知识库检索'
+  }
+  return names[tool] || tool
+}
+
+function parseMaybeJson(text) {
+  if (!text || typeof text !== 'string') return null
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function extractToolName(text) {
+  const m = String(text || '').match(/(?:工具|tool|function)[:：\s`"]+([a-zA-Z_][\w-]*)/)
+  return m?.[1] || ''
+}
+
+function extractJsonField(text, field) {
+  const re = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`)
+  return String(text || '').match(re)?.[1] || ''
+}
+
+function planItems(text) {
+  return String(text || '')
+    .split('\n')
+    .map(line => line.replace(/^\s*(?:[-*]|\d+[.)、])\s*/, '').trim())
+    .filter(line => line && !line.startsWith('【') && line.length <= 100)
+}
+
+function firstMeaningfulLine(text) {
+  return String(text || '')
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line && !line.startsWith('{') && !line.startsWith('```')) || ''
+}
+
+function stripMarkdownNoise(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, '[代码片段已折叠]')
+    .replace(/`([^`]{1,80})`/g, '$1')
+    .replace(/\*\*/g, '')
+    .trim()
+}
+
+function cleanOutput(text) {
+  return stripMarkdownNoise(String(text || ''))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function clampText(text, max = 160) {
+  const s = String(text || '').trim()
+  return s.length > max ? s.slice(0, max) + '…' : s
+}
+
 function formatJson(obj) {
   try {
     return JSON.stringify(obj, null, 2)
@@ -556,8 +847,15 @@ function startPoll() {
     if (ev.tasks.some(t => t.status === 'running' || t.status === 'cancelling')) {
       taskErrBanner.value = null
       await ev.loadTasks()
+      if (resultsOpen.value && resultsTaskId.value) {
+        try {
+          resultRows.value = await ev.fetchResults(resultsTaskId.value)
+        } catch {
+          // Keep the current rows visible if a transient refresh fails.
+        }
+      }
     }
-  }, 3000)
+  }, 1000)
 }
 
 function stopPoll() {
@@ -583,8 +881,7 @@ async function reloadConfig() {
 
 async function handleSaveConfig() {
   await cfg.save({
-    model: draftModel.value.trim() || undefined,
-    version_label: draftLabel.value
+    model: draftModel.value.trim() || undefined
   })
 }
 
@@ -837,6 +1134,10 @@ function judgeHS(r) {
   margin-bottom: 16px;
 }
 
+.form-grid.single {
+  grid-template-columns: minmax(260px, 560px);
+}
+
 @media (max-width: 720px) {
   .form-grid {
     grid-template-columns: 1fr;
@@ -1006,6 +1307,100 @@ function judgeHS(r) {
 
 .muted {
   color: var(--text-muted);
+}
+
+.progress-cell {
+  min-width: 190px;
+}
+
+.progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--success));
+  transition: width 180ms ease;
+}
+
+.current-item {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.current-desc {
+  max-width: 260px;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.phase-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+
+.live-replay {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-color));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+}
+
+.live-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.live-head h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.live-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.live-desc {
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.live-flow {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 6px;
 }
 
 .row-actions {
@@ -1193,6 +1588,13 @@ function judgeHS(r) {
   padding-left: 4px;
 }
 
+.trace-step {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
 .step-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1222,6 +1624,13 @@ function judgeHS(r) {
   color: var(--info);
 }
 
+.step-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 5px;
+}
+
 .outline {
   margin: 4px 0;
   padding: 8px;
@@ -1237,7 +1646,15 @@ function judgeHS(r) {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.step-detail {
+  margin-top: 6px;
+  color: var(--text-muted);
   font-size: 11px;
+  line-height: 1.45;
 }
 
 .mini-meta {
@@ -1245,6 +1662,29 @@ function judgeHS(r) {
   font-size: 10px;
   font-family: ui-monospace, monospace;
   color: var(--text-muted);
+}
+
+.raw-detail {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.raw-detail summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.raw-detail pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  overflow: auto;
+  max-height: 220px;
+  white-space: pre-wrap;
 }
 
 .sec-card {

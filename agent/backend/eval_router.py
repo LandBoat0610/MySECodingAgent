@@ -1,4 +1,5 @@
 """评测平台 HTTP 路由。"""
+import json
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Query
@@ -35,6 +36,10 @@ def _task_to_resp(row: Dict[str, Any]) -> EvalTaskResponse:
     data = dict(row)
     if "storage_path" in data:
         data.pop("storage_path", None)
+    try:
+        data["current_trace_json"] = json.loads(data.get("current_trace_json") or "[]")
+    except json.JSONDecodeError:
+        data["current_trace_json"] = []
     return EvalTaskResponse(**data)
 
 

@@ -121,3 +121,53 @@ class TestGatherCodeBlobForSecurityScan:
         state = {"final_answer": None}
         blob = gather_code_blob_for_security_scan(state, "/fake/ws")
         assert blob == ""
+
+    def test_gathers_modified_files(self, tmp_path):
+        """测试收集修改文件的代码片段。"""
+        # Create a fake modified file
+        file_path = tmp_path / "test.py"
+        file_path.write_text("print('hello world')", encoding="utf-8")
+        state = {
+            "final_answer": "answer text",
+            "modified_files": [str(file_path)],
+        }
+        blob = gather_code_blob_for_security_scan(
+            state,
+            str(tmp_path),
+            max_total=48000,
+        )
+        assert "print('hello world')" in blob
+        assert "answer text" in blob
+
+    def test_skips_nonexistent_files(self, tmp_path):
+        """测试跳过不存在的修改文件。"""
+        state = {
+            "final_answer": "only answer",
+            "modified_files": ["nonexistent.py"],
+        }
+        blob = gather_code_blob_for_security_scan(
+            state,
+            str(tmp_path),
+            max_total=48000,
+        )
+        assert "only answer" in blob
+        # 不存在的文件不出现在 blob 中
+        assert "nonexistent.py" not in blob
+
+    def test_respects_max_total(self, tmp_path):
+        """测试 max_total 限制生效。"""
+        state = {
+            "final_answer": "A" * 100,
+        }
+        blob = gather_code_blob_for_security_scan(
+            state,
+            str(tmp_path),
+            max_total=50,
+        )
+        assert len(blob) <= 50
+
+    def test_no_modified_files_field(self):
+        """测试没有 modified_files 字段的情况。"""
+        state = {"final_answer": "just answer"}
+        blob = gather_code_blob_for_security_scan(state, "/fake/ws")
+        assert "just answer" in blob
