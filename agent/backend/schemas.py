@@ -175,11 +175,13 @@ class FileTreeResponse(BaseModel):
 class AgentConfigResponse(BaseModel):
     model: str
     version_label: str = ""
+    cross_session_enabled: bool = True
 
 
 class AgentConfigUpdateRequest(BaseModel):
     model: Optional[str] = None
     version_label: Optional[str] = None
+    cross_session_enabled: Optional[bool] = None
 
 
 class EvalDatasetRow(BaseModel):

@@ -72,6 +72,7 @@ RAG_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "50"))
 RAG_COLLECTION_NAME = "agent_knowledge"
 
 # ── 跨对话记忆与上下文工程配置 ──
+CROSS_SESSION_ENABLED = os.environ.get("CROSS_SESSION_ENABLED", "true").strip().lower() not in ("0", "false", "no")
 CONTEXT_BUDGET = int(os.environ.get("CONTEXT_BUDGET", "12000"))
 MEMORY_MAX_ENTRIES = int(os.environ.get("MEMORY_MAX_ENTRIES", "20"))
 HISTORY_RETRIEVAL_LIMIT = int(os.environ.get("HISTORY_RETRIEVAL_LIMIT", "5"))

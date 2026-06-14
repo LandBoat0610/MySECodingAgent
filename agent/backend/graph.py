@@ -40,6 +40,16 @@ from agent.backend.session_manager import (
     save_project_memory,
 )
 
+
+def _is_cross_session_enabled() -> bool:
+    """检查当前用户是否启用了跨对话知识共享。"""
+    try:
+        from agent.backend.platform_settings import get_agent_config
+
+        return bool(get_agent_config().get("cross_session_enabled", True))
+    except Exception:
+        return True  # 默认启用，避免因读取失败而误关闭
+
 import time
 from agent.backend.database import get_connection
 
@@ -474,7 +484,7 @@ def context_builder_node(state: AgentState) -> AgentState:
 
     # 跨对话记忆与上下文工程
     project_id = state.get("project_id", "")
-    if project_id:
+    if project_id and _is_cross_session_enabled():
         memory_ctx = get_memory_context(project_id, session_id)
         state["session_summary"] = str(memory_ctx.get("session_summary", ""))
         state["project_memory"] = str(memory_ctx.get("project_memory", ""))
@@ -1089,17 +1099,18 @@ def finalize_node(state: AgentState) -> AgentState:
     log_state(trace, "final", final_summary, session_id=session_id, state=state)
     if not state.get("eval_mode"):
         save_memory(state["task"], final_summary)
-        # 跨对话记忆：保存会话摘要和项目记忆
-        project_id = state.get("project_id", "")
-        if project_id and session_id:
-            try:
-                generate_and_save_session_summary(
-                    session_id, project_id, state["task"], final_summary
-                )
-                # 自动提取并保存项目级关键信息
-                _auto_extract_project_memory(state, project_id)
-            except Exception:
-                pass
+        # 跨对话记忆：保存会话摘要和项目记忆（仅在启用时）
+        if _is_cross_session_enabled():
+            project_id = state.get("project_id", "")
+            if project_id and session_id:
+                try:
+                    generate_and_save_session_summary(
+                        session_id, project_id, state["task"], final_summary
+                    )
+                    # 自动提取并保存项目级关键信息
+                    _auto_extract_project_memory(state, project_id)
+                except Exception:
+                    pass
 
     if session_id:
         from agent.backend.utils import update_session_state

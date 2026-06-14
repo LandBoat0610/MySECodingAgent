@@ -51,9 +51,13 @@ def _read_setting_value(key: str) -> str | None:
 
 
 def _default_agent_config() -> Dict[str, Any]:
-    from agent.backend.config import MODEL
+    from agent.backend.config import CROSS_SESSION_ENABLED, MODEL
 
-    return {"model": MODEL, "version_label": ""}
+    return {
+        "model": MODEL,
+        "version_label": "",
+        "cross_session_enabled": CROSS_SESSION_ENABLED,
+    }
 
 
 def get_agent_config() -> Dict[str, Any]:
@@ -76,6 +80,8 @@ def set_agent_config(data: Dict[str, Any]) -> Dict[str, Any]:
         merged["model"] = str(data["model"]).strip()
     if "version_label" in data and data["version_label"] is not None:
         merged["version_label"] = str(data["version_label"]).strip()
+    if "cross_session_enabled" in data:
+        merged["cross_session_enabled"] = bool(data["cross_session_enabled"])
     payload = json.dumps(merged, ensure_ascii=False)
     with get_connection() as conn:
         conn.execute(

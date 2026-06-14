@@ -35,6 +35,40 @@
     <div class="chat-messages" ref="messagesContainer" @scroll="handleMessagesScroll">
       <div v-if="store.roundsLoadingOlder" class="history-loader">加载更早的对话…</div>
 
+      <!-- 跨对话记忆上下文 -->
+      <div v-if="hasMemoryContext" class="memory-context-panel">
+        <div class="memory-header" @click="memoryExpanded = !memoryExpanded">
+          <span class="memory-icon">🧠</span>
+          <span class="memory-title">跨对话记忆</span>
+          <span class="memory-summary">{{ memorySummaryText }}</span>
+          <span class="toggle-btn">{{ memoryExpanded ? '▾' : '▸' }}</span>
+        </div>
+        <div v-if="memoryExpanded" class="memory-body">
+          <div v-if="store.sessionSummary" class="memory-item">
+            <div class="memory-item-label">📋 会话摘要</div>
+            <div class="memory-item-content">{{ store.sessionSummary }}</div>
+          </div>
+          <div v-if="store.projectMemory" class="memory-item">
+            <div class="memory-item-label">📦 项目记忆</div>
+            <pre class="memory-item-content pre">{{ store.projectMemory }}</pre>
+          </div>
+          <div v-if="store.relevantHistory.length > 0" class="memory-item">
+            <div class="memory-item-label">📜 相关历史 ({{ store.relevantHistory.length }} 条)</div>
+            <div v-for="(h, i) in store.relevantHistory" :key="i" class="history-entry">
+              <span class="history-role">{{ h.role === 'user' ? '👤' : '🤖' }}</span>
+              <span class="history-content">{{ h.content }}</span>
+            </div>
+          </div>
+          <div v-if="store.contextBudget" class="memory-item budget">
+            <span class="memory-item-label">📊 上下文预算</span>
+            <span class="budget-value">{{ store.contextBudget }} tokens</span>
+          </div>
+          <div v-if="memoryLoading" class="memory-item">
+            <span class="memory-item-label">⏳ 加载中...</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 空状态 -->
       <div v-if="isEmpty" class="chat-empty">
         <div class="empty-icon">🤖</div>
@@ -426,6 +460,24 @@ function renderMd(text) {
 
 const store = useAgentStore()
 const cfg = useAgentConfigStore()
+
+// ── 跨对话记忆上下文展示 ──────────────────────────────────
+const memoryExpanded = ref(false)
+const hasMemoryContext = computed(() => {
+  return store.memoryLoading ||
+    !!store.sessionSummary ||
+    !!store.projectMemory ||
+    store.relevantHistory.length > 0
+})
+const memorySummaryText = computed(() => {
+  if (store.memoryLoading) return '加载中...'
+  const parts = []
+  if (store.sessionSummary) parts.push('有会话摘要')
+  if (store.projectMemory) parts.push('有项目记忆')
+  if (store.relevantHistory.length) parts.push(`${store.relevantHistory.length} 条相关历史`)
+  return parts.length ? parts.join('，') : ''
+})
+const memoryLoading = computed(() => store.memoryLoading)
 
 onMounted(() => { if (!cfg.model) cfg.load() })
 
@@ -988,6 +1040,106 @@ watch(() => store.finalAnswer, async () => { await nextTick(); scrollToBottom() 
   color: var(--text-muted);
   font-size: 11px;
   padding: 4px 8px;
+}
+
+/* ── 跨对话记忆上下文面板 ──────────────────────────────── */
+.memory-context-panel {
+  margin: 8px 12px;
+  border: 1px solid rgba(180, 190, 254, 0.15);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.memory-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(180, 190, 254, 0.05);
+  cursor: pointer;
+  user-select: none;
+}
+.memory-header:hover {
+  background: rgba(180, 190, 254, 0.1);
+}
+.memory-icon { font-size: 13px; }
+.memory-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.memory-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toggle-btn {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.memory-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.memory-item {
+  padding: 6px 8px;
+  background: rgba(148, 163, 184, 0.04);
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+.memory-item-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.memory-item-content {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.memory-item-content.pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  margin: 0;
+  font-size: 11px;
+}
+.history-entry {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.06);
+}
+.history-entry:first-child { border-top: none; }
+.history-role { flex-shrink: 0; font-size: 12px; }
+.history-content {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.budget {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.budget-value {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
 }
 
 /* ── 轮次分隔线 ─────────────────────────────────────────── */

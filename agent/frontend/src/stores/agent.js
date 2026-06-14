@@ -323,6 +323,8 @@ export const useAgentStore = defineStore('agent', () => {
     prevRoundPlanIds.value = new Set()
     resetRoundPaging()
     resetLivePerfForNewRun()
+    // 加载跨对话记忆上下文（项目记忆 + 历史 + 偏好）
+    fetchMemoryContext()
   }
 
   async function selectSession(sessionId) {
@@ -343,6 +345,8 @@ export const useAgentStore = defineStore('agent', () => {
     resetRoundPaging()
     resetLivePerfForNewRun()
     await restoreSessionState()
+    // 加载跨对话记忆上下文（项目记忆 + 历史 + 偏好）
+    fetchMemoryContext()
   }
 
   async function restoreSessionState() {
@@ -682,6 +686,8 @@ export const useAgentStore = defineStore('agent', () => {
       selectedSessionId.value = session.id
       persistSessionId(session.id)
       sessionStatus.value = session.status || 'idle'
+      // 新会话自动加载跨对话记忆上下文
+      fetchMemoryContext()
     }
     // 将当前轮归档到历史（如果本轮已有用户消息）
     if (currentRoundUserMsg.value) {

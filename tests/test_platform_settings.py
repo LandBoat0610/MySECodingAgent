@@ -32,6 +32,7 @@ class TestGetAgentConfig:
         cfg = get_agent_config()
         assert "model" in cfg
         assert "version_label" in cfg
+        assert "cross_session_enabled" in cfg
 
     def test_merges_stored_value(self, monkeypatch):
         stored = json.dumps({"model": "gpt-4o", "version_label": "v2"})

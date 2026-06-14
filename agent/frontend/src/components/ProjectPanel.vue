@@ -100,6 +100,18 @@
       </div>
     </div>
 
+    <div v-if="store.selectedProjectId" class="cross-session-section">
+      <div class="cross-session-row">
+        <span class="toggle-label">跨对话知识共享</span>
+        <input
+          type="checkbox"
+          :checked="agentConfigStore.crossSessionEnabled"
+          @change="agentConfigStore.save({ cross_session_enabled: $event.target.checked })"
+        />
+      </div>
+      <span class="toggle-hint">将当前对话经验带入新对话，关闭后每次对话独立运行</span>
+    </div>
+
     <div v-if="store.selectedProjectId" class="tool-section">
       <div class="panel-header">
         <button class="panel-title-button" @click="toolsCollapsed = !toolsCollapsed" :title="toolsCollapsed ? 'Expand Tools' : 'Collapse Tools'">
@@ -184,10 +196,12 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useAgentStore } from '../stores/agent.js'
+import { useAgentConfigStore } from '../stores/agentConfig.js'
 import { EmptyState, ErrorBanner } from './status/index.js'
 import { showConfirm } from '../composables/useConfirm.js'
 
 const store = useAgentStore()
+const agentConfigStore = useAgentConfigStore()
 
 const showNewProject = ref(false)
 const newProjectName = ref('')
@@ -696,6 +710,33 @@ function formatDate(iso) {
   border-top: 1px solid var(--border-color);
   flex: 0 0 auto;
   min-height: 0;
+}
+
+.cross-session-section {
+  border-top: 1px solid var(--border-color);
+  padding: 10px 14px;
+  flex: 0 0 auto;
+}
+
+.cross-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.toggle-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.toggle-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .tool-list,

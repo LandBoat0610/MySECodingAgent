@@ -25,6 +25,7 @@ describe('agentConfig store', () => {
         const store = useAgentConfigStore()
         expect(store.model).toBe('')
         expect(store.versionLabel).toBe('')
+        expect(store.crossSessionEnabled).toBe(true)
         expect(store.loading).toBe(false)
         expect(store.error).toBeNull()
     })
@@ -33,13 +34,15 @@ describe('agentConfig store', () => {
         it('should load config successfully', async () => {
             api.getAgentConfig.mockResolvedValue({
                 model: 'gpt-4o',
-                version_label: 'v2'
+                version_label: 'v2',
+                cross_session_enabled: true
             })
             const store = useAgentConfigStore()
             await store.load()
 
             expect(store.model).toBe('gpt-4o')
             expect(store.versionLabel).toBe('v2')
+            expect(store.crossSessionEnabled).toBe(true)
             expect(store.loading).toBe(false)
             expect(store.error).toBeNull()
         })
@@ -51,6 +54,25 @@ describe('agentConfig store', () => {
 
             expect(store.model).toBe('')
             expect(store.versionLabel).toBe('')
+            expect(store.crossSessionEnabled).toBe(true)
+        })
+
+        it('should treat cross_session_enabled=false as disabled', async () => {
+            api.getAgentConfig.mockResolvedValue({
+                cross_session_enabled: false
+            })
+            const store = useAgentConfigStore()
+            await store.load()
+
+            expect(store.crossSessionEnabled).toBe(false)
+        })
+
+        it('should treat missing cross_session_enabled as enabled', async () => {
+            api.getAgentConfig.mockResolvedValue({ model: 'test' })
+            const store = useAgentConfigStore()
+            await store.load()
+
+            expect(store.crossSessionEnabled).toBe(true)
         })
 
         it('should set error on failure', async () => {
@@ -88,14 +110,28 @@ describe('agentConfig store', () => {
         it('should save config successfully', async () => {
             api.updateAgentConfig.mockResolvedValue({
                 model: 'gpt-4-turbo',
-                version_label: 'v3'
+                version_label: 'v3',
+                cross_session_enabled: true
             })
             const store = useAgentConfigStore()
             await store.save({ model: 'gpt-4-turbo' })
 
             expect(store.model).toBe('gpt-4-turbo')
             expect(store.versionLabel).toBe('v3')
+            expect(store.crossSessionEnabled).toBe(true)
             expect(api.updateAgentConfig).toHaveBeenCalledWith({ model: 'gpt-4-turbo' })
+        })
+
+        it('should save cross_session_enabled toggle', async () => {
+            api.updateAgentConfig.mockResolvedValue({
+                model: '',
+                version_label: '',
+                cross_session_enabled: false
+            })
+            const store = useAgentConfigStore()
+            await store.save({ cross_session_enabled: false })
+
+            expect(store.crossSessionEnabled).toBe(false)
         })
 
         it('should throw on failure and set error', async () => {

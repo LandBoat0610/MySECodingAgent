@@ -15,6 +15,7 @@ from typing import Any, Dict
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from agent.backend.database import init_db, get_connection
 from agent.backend.schemas import (
     ProjectCreateRequest,
@@ -74,6 +75,13 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(eval_router)
 
 
@@ -88,7 +96,11 @@ def health_check():
 @app.get("/settings/agent-config", response_model=AgentConfigResponse)
 def read_agent_config():
     cfg = get_agent_config()
-    return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+    return AgentConfigResponse(
+        model=cfg.get("model", ""),
+        version_label=cfg.get("version_label") or "",
+        cross_session_enabled=cfg.get("cross_session_enabled", True),
+    )
 
 
 @app.put("/settings/agent-config", response_model=AgentConfigResponse)
@@ -98,11 +110,21 @@ def update_agent_config(req: AgentConfigUpdateRequest):
         payload["model"] = req.model
     if req.version_label is not None:
         payload["version_label"] = req.version_label
+    if req.cross_session_enabled is not None:
+        payload["cross_session_enabled"] = req.cross_session_enabled
     if not payload:
         cfg = get_agent_config()
-        return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+        return AgentConfigResponse(
+            model=cfg.get("model", ""),
+            version_label=cfg.get("version_label") or "",
+            cross_session_enabled=cfg.get("cross_session_enabled", True),
+        )
     cfg = set_agent_config(payload)
-    return AgentConfigResponse(model=cfg.get("model", ""), version_label=cfg.get("version_label") or "")
+    return AgentConfigResponse(
+        model=cfg.get("model", ""),
+        version_label=cfg.get("version_label") or "",
+        cross_session_enabled=cfg.get("cross_session_enabled", True),
+    )
 
 
 @app.get("/settings/tools", response_model=ToolSettingsResponse)
