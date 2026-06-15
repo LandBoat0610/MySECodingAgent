@@ -351,38 +351,7 @@ RAG（Retrieval-Augmented Generation）用来解决以下问题：
 
 #### 5.3.1 新增 RAG 知识文件
 
-当前版本没有单独的“上传 RAG 文件”按钮或上传接口。用户可以先把知识文件放入项目工作区中会被自动扫描的位置，然后调用入库接口重新写入知识库。
-
-自动入库会扫描以下文件：
-
-- 项目工作区根目录下的 `README.md`
-- 项目工作区 `docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
-- 项目工作区 `agent/docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
-- 项目工作区根目录下的 `.pdf` 文件
-
-操作步骤：
-
-1. 将新增文档放到上述目录，例如 `docs/my_knowledge.md` 或 `agent/docs/usage.md`。
-2. 确保 ChromaDB 已启动，后端服务正在运行。
-3. 调用入库接口：
-
-```powershell
-Invoke-RestMethod -Method Post "http://127.0.0.1:8000/rag/ingest?project_id=你的项目ID"
-```
-
-4. 查看知识库统计：
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/rag/stats"
-```
-
-5. 可选：直接搜索验证是否入库成功：
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/rag/search?query=你的问题&top_k=5"
-```
-
-同一路径的文档重复入库时会使用 `upsert` 覆盖对应分块，避免每次重新入库都产生重复记录。
+新增 RAG 知识文件、入库和验证流程见 [7.2.1 RAG 开启与使用完整流程](#721-rag-开启与使用完整流程)。
 
 ### 5.4 跨对话记忆接口
 
@@ -504,6 +473,161 @@ python -c "from agent.backend.rag import get_rag_stats; print(get_rag_stats())"
 ```
 
 正常情况下应该能看到 `status: ok`，并显示 collection、chunk 数量等信息。
+
+### 7.2.1 RAG 开启与使用完整流程
+
+RAG 功能依赖 ChromaDB、Embedding API、后端服务和前端页面。推荐按下面顺序开启和使用。
+
+**1. 启动 ChromaDB**
+
+如果本机已经创建过 `chroma-local` 容器：
+
+```powershell
+docker start chroma-local
+```
+
+如果还没有创建容器：
+
+```powershell
+docker run -d `
+  --name chroma-local `
+  --restart unless-stopped `
+  -v "${PWD}\chroma-data:/data" `
+  -p 8001:8000 `
+  chromadb/chroma
+```
+
+ChromaDB 对外暴露的是本机 `8001` 端口，后端会通过 `CHROMA_HOST` 和 `CHROMA_PORT` 连接它。
+
+**2. 配置后端 RAG 环境变量**
+
+在启动后端前，建议在 PowerShell 中设置：
+
+```powershell
+$env:CHROMA_MODE="http"
+$env:CHROMA_HOST="localhost"
+$env:CHROMA_PORT="8001"
+$env:RAG_DEFAULT_TOP_K="5"
+```
+
+如果需要使用自定义 Embedding 模型，也可以设置：
+
+```powershell
+$env:RAG_EMBEDDING_MODEL="BAAI/bge-large-zh-v1.5"
+```
+
+Embedding 调用复用 OpenAI 兼容 API 配置，因此还需要正确设置 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等大模型相关环境变量。
+
+**3. 启动后端和前端**
+
+后端启动示例：
+
+```powershell
+python -m uvicorn agent.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+前端启动示例：
+
+```powershell
+cd agent/frontend
+npm run dev
+```
+
+启动完成后访问：
+
+- 后端 Swagger 文档：`http://127.0.0.1:8000/docs`
+- 前端页面：`http://localhost:3000`
+
+**4. 准备 RAG 知识文件**
+
+当前版本没有单独的“上传 RAG 文件”按钮。需要把知识文件放入项目工作区中会被自动扫描的位置：
+
+- 项目工作区根目录下的 `README.md`
+- 项目工作区 `docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
+- 项目工作区 `agent/docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
+- 项目工作区根目录下的 `.pdf` 文件
+
+例如可以新增：
+
+```text
+docs/my_knowledge.md
+agent/docs/usage_guide.md
+project_manual.pdf
+```
+
+注意：这里的“项目工作区”是平台中创建或打开项目时记录的 `workspace_path`，不是一定等于本仓库根目录。
+
+**5. 将知识文件入库**
+
+先在页面或接口中确认项目 ID，然后调用：
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/rag/ingest?project_id=你的项目ID"
+```
+
+入库过程会自动加载文档、切分文本、调用 Embedding、写入 ChromaDB。重复对同一路径文档入库时会使用 `upsert` 覆盖对应分块，避免重复记录不断累积。
+
+**6. 检查 RAG 状态**
+
+查看知识库统计：
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/rag/stats"
+```
+
+正常情况下会返回 `status: ok`，并显示 collection 名称、chunk 数量和 ChromaDB 连接模式。
+
+也可以直接搜索验证：
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/rag/search?query=你的问题&top_k=5"
+```
+
+如果能返回 `results`，说明知识库已有可检索内容。
+
+**7. 在前端页面中使用 RAG**
+
+打开前端页面后：
+
+1. 创建或打开一个项目。
+2. 创建会话。
+3. 输入明确要求使用项目知识库的问题，例如：
+
+```text
+请根据项目知识库回答：新增 Python 函数和 pytest 测试应该遵循什么规则？
+```
+
+预期现象：
+
+- 执行轨迹中出现 `rag_search`
+- 回答中包含知识库检索到的内容
+- 回答下方或轨迹中能看到 RAG 来源信息
+
+普通计算、闲聊、无需项目知识库的问题不应该触发 RAG。例如：
+
+```text
+请直接计算 12 × 13，只返回结果。
+```
+
+这类问题预期直接回答 `156`，执行轨迹中不出现 `rag_search`。
+
+**8. 修改知识库后的使用方式**
+
+如果新增、修改或删除了知识库文档，需要重新调用：
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/rag/ingest?project_id=你的项目ID"
+```
+
+如果只是改了普通代码文件，而该文件不在自动扫描范围内，则不会影响 RAG 知识库。
+
+**9. 常见问题**
+
+- `rag_search` 返回知识库为空：先确认是否已经调用 `/rag/ingest`，再检查 `/rag/stats` 的 `chunk_count`。
+- 无法连接 ChromaDB：确认 Docker 容器已启动，并且 `CHROMA_PORT` 是 `8001`。
+- 入库失败：确认 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 Embedding 相关配置可用。
+- 页面提问没有触发 RAG：问题需要明确提到“项目知识库”“根据知识库”等意图；普通问题按设计不会触发 RAG。
+- 新文件没有被检索到：确认文件放在自动扫描范围内，并在添加文件后重新入库。
 
 ### 7.3 后端启动
 
