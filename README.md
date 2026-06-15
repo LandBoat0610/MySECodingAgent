@@ -349,6 +349,41 @@ RAG（Retrieval-Augmented Generation）用来解决以下问题：
 | GET  | `/rag/search?query=...&top_k=5` | 直接搜索知识库（调试用）     |
 | GET  | `/rag/stats`                    | 获取知识库统计信息           |
 
+#### 5.3.1 新增 RAG 知识文件
+
+当前版本没有单独的“上传 RAG 文件”按钮或上传接口。用户可以先把知识文件放入项目工作区中会被自动扫描的位置，然后调用入库接口重新写入知识库。
+
+自动入库会扫描以下文件：
+
+- 项目工作区根目录下的 `README.md`
+- 项目工作区 `docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
+- 项目工作区 `agent/docs/` 目录下的 `.md`、`.txt`、`.markdown` 文件
+- 项目工作区根目录下的 `.pdf` 文件
+
+操作步骤：
+
+1. 将新增文档放到上述目录，例如 `docs/my_knowledge.md` 或 `agent/docs/usage.md`。
+2. 确保 ChromaDB 已启动，后端服务正在运行。
+3. 调用入库接口：
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/rag/ingest?project_id=你的项目ID"
+```
+
+4. 查看知识库统计：
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/rag/stats"
+```
+
+5. 可选：直接搜索验证是否入库成功：
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/rag/search?query=你的问题&top_k=5"
+```
+
+同一路径的文档重复入库时会使用 `upsert` 覆盖对应分块，避免每次重新入库都产生重复记录。
+
 ### 5.4 跨对话记忆接口
 
 | 方法 | 路径                                        | 说明                 |
