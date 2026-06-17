@@ -137,6 +137,7 @@ vitest_frontend:
     - cd agent/frontend
     - npm install
   script:
+    - mkdir -p coverage
     - npx vitest run --coverage --reporter=verbose --reporter=junit --outputFile=junit.xml
   artifacts:
     paths:

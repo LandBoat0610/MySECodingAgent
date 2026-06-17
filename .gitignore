@@ -59,24 +59,4 @@ agent/eval_storage/
 # --- 工具链评测套件（本地测试数据，不纳入版本控制）---
 toolchain_eval_report.md
 agent/eval_storage/
-# Python virtual environment
-.venv/
-
-# Python cache
-__pycache__/
-*.py[cod]
-.pytest_cache/
-
-# Local secrets
-.env
-.env.*
-!.env.example
-
-# ChromaDB local data
-chroma-data/
-
-# Local backups and temporary verification files
-*.bak
-tmp_rag_e2e.md
-verify_rag_e2e.py
-test_result.txt
+.error.md
